@@ -1,0 +1,27 @@
+[package]
+name = "ctx-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI binary for Contexto — ctx status, ctx context, ctx remember"
+repository = "https://github.com/NSTKrishna/Contexto"
+license = "MIT"
+
+[[bin]]
+name = "ctx"
+path = "src/main.rs"
+
+[dependencies]
+ctx-core = { path = "../ctx-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+dotenvy = { workspace = true }
+
+[lints]
+workspace = true

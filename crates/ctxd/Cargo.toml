@@ -1,0 +1,37 @@
+[package]
+name = "ctxd"
+version = "0.1.0"
+edition = "2021"
+description = "Contexto daemon — REST API server and MCP stdio server"
+repository = "https://github.com/NSTKrishna/Contexto"
+license = "MIT"
+
+[[bin]]
+name = "ctxd"
+path = "src/main.rs"
+
+[dependencies]
+ctx-core = { path = "../ctx-core" }
+ctx-db = { path = "../ctx-db" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+config = { workspace = true }
+dotenvy = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

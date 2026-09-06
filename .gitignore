@@ -1,0 +1,123 @@
+# =============================================================================
+# Contexto — Universal Developer Context Manager
+# .gitignore — Comprehensive ignore rules for the full monorepo
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Rust Build Artifacts
+# -----------------------------------------------------------------------------
+target/
+**/*.rs.bk
+Cargo.lock.bk
+
+# -----------------------------------------------------------------------------
+# Node.js / VS Code Extension / Tauri Frontend
+# -----------------------------------------------------------------------------
+node_modules/
+dist/
+out/
+build/
+.next/
+.nuxt/
+*.vsix
+*.tgz
+.npm/
+
+# -----------------------------------------------------------------------------
+# Tauri Desktop App
+# -----------------------------------------------------------------------------
+apps/desktop/src-tauri/target/
+apps/desktop/dist/
+
+# -----------------------------------------------------------------------------
+# Local Daemon Runtime State & Databases
+# CRITICAL: These files contain all developer context data — must NEVER leak!
+# -----------------------------------------------------------------------------
+*.db
+*.db-*
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sock
+*.pid
+
+# Daemon data directories
+.ctx/
+ctx_data/
+~/.ctx/
+
+# Vector store indexes
+lancedb/
+vector_index/
+*.hnsw
+*.faiss
+fastembed_cache/
+
+# -----------------------------------------------------------------------------
+# Environment Variables & Secrets
+# CRITICAL: .env files must never be committed. Use .env.example as template.
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+auth_token
+
+# -----------------------------------------------------------------------------
+# macOS System Files
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+*.swo
+
+# -----------------------------------------------------------------------------
+# IDE & Editor Files
+# -----------------------------------------------------------------------------
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.iml
+.fleet/
+
+# Keep shared VS Code extension config
+!.vscode/extensions.json
+!.vscode/tasks.json
+
+# -----------------------------------------------------------------------------
+# Logs & Crash Reports
+# -----------------------------------------------------------------------------
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+crash-*.txt
+
+# -----------------------------------------------------------------------------
+# Test Coverage & Reports
+# -----------------------------------------------------------------------------
+coverage/
+*.lcov
+tarpaulin-report.html
+lcov.info
+
+# -----------------------------------------------------------------------------
+# Temporary & Scratch Files
+# -----------------------------------------------------------------------------
+tmp/
+temp/
+scratch/
+*.tmp
+*.bak
+*.orig

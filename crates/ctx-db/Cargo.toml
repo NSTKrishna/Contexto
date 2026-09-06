@@ -1,0 +1,22 @@
+[package]
+name = "ctx-db"
+version = "0.1.0"
+edition = "2021"
+description = "SQLite + FTS5 schema, migrations, and batched write engine for Contexto"
+repository = "https://github.com/NSTKrishna/Contexto"
+license = "MIT"
+
+[dependencies]
+ctx-core = { path = "../ctx-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
