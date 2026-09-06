@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Contexto — Pre-Push Hook
+# Runs the full test suite before allowing any push to remote.
+
+# Ensure Rust toolchain is on PATH (handles macOS rustup installs)
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Install: git config core.hooksPath .githooks
+# =============================================================================
+set -eo pipefail
+
+echo ""
+echo "🚀 Running Pre-Push Test Suite for Contexto..."
+echo "================================================"
+
+# ---------------------------------------------------------------------------
+# Full workspace test — excludes ctx-desktop (Tauri, requires display server)
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> Running: cargo test --workspace --exclude ctx-desktop"
+echo ""
+
+if ! cargo test --workspace --exclude ctx-desktop 2>&1; then
+    echo ""
+    echo "================================================"
+    echo "❌ Tests failed! Push blocked."
+    echo "   Fix failing tests before pushing."
+    exit 1
+fi
+
+echo ""
+echo "================================================"
+echo "✅ All tests passed. Push allowed."
+echo ""

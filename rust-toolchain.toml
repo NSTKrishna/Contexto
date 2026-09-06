@@ -1,0 +1,16 @@
+[toolchain]
+# Pinned Rust compiler version for the Contexto monorepo.
+# Ensures consistent compilation across desktop, CLI, daemon, and CI.
+# Update intentionally and test across all crates before bumping.
+channel = "1.82.0"
+components = [
+    "rustfmt",          # Code formatter
+    "clippy",           # Linter
+    "rust-analyzer",    # LSP support
+    "rust-src",         # Jump-to-definition for std
+    "llvm-tools-preview" # For cargo-llvm-cov coverage reports
+]
+targets = [
+    "x86_64-apple-darwin",   # Intel Mac
+    "aarch64-apple-darwin",  # Apple Silicon (M1/M2/M3/M4)
+]

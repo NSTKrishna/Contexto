@@ -1,0 +1,98 @@
+[workspace]
+# =============================================================================
+# Contexto — Universal Developer Context Manager
+# Cargo Workspace Root
+# =============================================================================
+resolver = "2"
+
+members = [
+    "crates/ctx-core",   # Core event types, ring buffer, shared abstractions
+    "crates/ctx-db",     # SQLite + FTS5 schema, migrations, batch writer
+    "crates/ctx-cli",    # CLI binary: `ctx status`, `ctx context`, `ctx remember`
+    "crates/ctxd",       # Daemon binary: REST API + MCP server
+]
+
+# Tauri desktop app is part of the workspace but excluded from default test runs
+# (requires a display server / WebView runtime)
+exclude = [
+    "apps/desktop/src-tauri",
+]
+
+# =============================================================================
+# Shared Workspace Dependencies
+# All versions are pinned here. Crates inherit via `workspace = true`.
+# =============================================================================
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
+
+# HTTP server (daemon REST API)
+axum = { version = "0.7", features = ["json", "http1", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# HTTP client (CLI → daemon communication)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# IDs and time
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Cryptography (auth token generation)
+rand = "0.8"
+base64 = "0.22"
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Config loading
+config = "0.14"
+dotenvy = "0.15"
+
+# =============================================================================
+# Workspace-wide Lint Configuration
+# Zero-tolerance on common footguns.
+# =============================================================================
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_imports = "warn"
+dead_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+# Allowed pedantic exceptions that are too noisy in practice
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+
+# =============================================================================
+# Release Profile — Optimized for daemon performance
+# =============================================================================
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# =============================================================================
+# Dev Profile — Faster incremental compilation during development
+# =============================================================================
+[profile.dev]
+opt-level = 0
+debug = true

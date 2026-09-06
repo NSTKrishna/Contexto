@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Contexto — Pre-Commit Hook
+# Guards against secrets, format drift, and broken typechecks.
+
+# Ensure Rust toolchain is on PATH (handles macOS rustup installs)
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Install: git config core.hooksPath .githooks
+# =============================================================================
+set -eo pipefail
+
+echo ""
+echo "🔒 Running Pre-Commit Checks for Contexto..."
+echo "============================================="
+
+# ---------------------------------------------------------------------------
+# 1. Secret Detection via Gitleaks
+#    Blocks commit if any API keys, tokens, or credentials are staged.
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> [1/4] Secret Detection (gitleaks)..."
+if command -v gitleaks &> /dev/null; then
+    gitleaks protect --staged --verbose --redact
+    echo "    ✅ No secrets detected."
+else
+    echo "    ⚠️  gitleaks not installed. Highly recommended for a context manager."
+    echo "       Install with: brew install gitleaks"
+    echo "       Skipping secret scan — this is a security risk!"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Rust: Format Check + Clippy (Zero-tolerance on warnings)
+#    Only runs if Rust files are staged.
+# ---------------------------------------------------------------------------
+STAGED_RS=$(git diff --cached --name-only | grep -E '\.rs$' || true)
+if [ -n "$STAGED_RS" ]; then
+    echo ""
+    echo "==> [2/4] Rust Checks..."
+
+    # Format check
+    echo "    --> cargo fmt (format check)..."
+    if ! cargo fmt --all -- --check 2>&1; then
+        echo ""
+        echo "    ❌ ERROR: Rust formatting violations found."
+        echo "       Run 'cargo fmt --all' to auto-fix, then re-stage."
+        exit 1
+    fi
+    echo "    ✅ Formatting OK."
+
+    # Clippy — deny all warnings
+    echo "    --> cargo clippy (lint check)..."
+    if ! cargo clippy --workspace --all-targets -- -D warnings 2>&1; then
+        echo ""
+        echo "    ❌ ERROR: Clippy warnings found (treated as errors)."
+        echo "       Fix all warnings before committing."
+        exit 1
+    fi
+    echo "    ✅ Clippy clean."
+else
+    echo ""
+    echo "==> [2/4] Rust Checks... (skipped — no .rs files staged)"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. TypeScript: Type-check the VS Code Extension
+#    Only runs if extension TypeScript files are staged.
+# ---------------------------------------------------------------------------
+STAGED_TS=$(git diff --cached --name-only | grep -E '^extensions/vscode/.*\.(ts|tsx)$' || true)
+if [ -n "$STAGED_TS" ]; then
+    echo ""
+    echo "==> [3/4] TypeScript Type-Check (VS Code extension)..."
+    if [ ! -d "extensions/vscode" ]; then
+        echo "    ⚠️  extensions/vscode directory not found. Skipping."
+    else
+        (cd extensions/vscode && npm run typecheck 2>&1)
+        echo "    ✅ TypeScript types OK."
+    fi
+else
+    echo ""
+    echo "==> [3/4] TypeScript Checks... (skipped — no extension .ts files staged)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Forbidden File Guard
+#    Hard-blocks committing runtime database, socket, PID, or log files.
+#    These must NEVER enter version control for the context manager.
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> [4/4] Forbidden File Guard..."
+FORBIDDEN=$(git diff --cached --name-only | grep -E '\.(db|sqlite|sqlite3|sock|pid|log)$' || true)
+if [ -n "$FORBIDDEN" ]; then
+    echo ""
+    echo "    ❌ ERROR: Attempting to commit runtime/state files:"
+    echo "$FORBIDDEN" | sed 's/^/       - /'
+    echo ""
+    echo "    These file types (db, sqlite, sock, pid, log) must never be committed."
+    echo "    Add them to .gitignore and unstage with: git restore --staged <file>"
+    exit 1
+fi
+echo "    ✅ No forbidden file types staged."
+
+echo ""
+echo "============================================="
+echo "✅ All pre-commit checks passed. Committing..."
+echo ""

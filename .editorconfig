@@ -1,0 +1,49 @@
+# =============================================================================
+# Contexto — Universal Developer Context Manager
+# .editorconfig — Consistent formatting across Rust, TypeScript, and Markdown
+# =============================================================================
+
+root = true
+
+# ---------------------------------------------------------------------------
+# Universal defaults for all files
+# ---------------------------------------------------------------------------
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+max_line_length = 100
+
+# ---------------------------------------------------------------------------
+# Web / Config files (2-space indent — ecosystem standard)
+# ---------------------------------------------------------------------------
+[*.{json,jsonc,yml,yaml,toml,ts,tsx,js,jsx,mjs,cjs,css,html,svelte,vue}]
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# Markdown — preserve trailing spaces (used for line breaks in MD)
+# ---------------------------------------------------------------------------
+[*.{md,mdx}]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# ---------------------------------------------------------------------------
+# Makefiles require hard tabs
+# ---------------------------------------------------------------------------
+[Makefile]
+indent_style = tab
+
+# ---------------------------------------------------------------------------
+# Shell scripts
+# ---------------------------------------------------------------------------
+[*.{sh,bash,zsh}]
+indent_size = 4
+
+# ---------------------------------------------------------------------------
+# SQL migration files
+# ---------------------------------------------------------------------------
+[*.sql]
+indent_size = 2
