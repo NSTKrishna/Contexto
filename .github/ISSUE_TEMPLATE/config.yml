@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Architecture & Roadmap
+    url: https://github.com/NSTKrishna/Contexto/blob/main/docs/ARCHITECTURE.md
+    about: Read the full phase roadmap before filing a feature request
+  - name: Security Vulnerability
+    url: https://github.com/NSTKrishna/Contexto/blob/main/docs/SECURITY.md
+    about: Read the security model. For vulnerabilities, email privately rather than opening a public issue.

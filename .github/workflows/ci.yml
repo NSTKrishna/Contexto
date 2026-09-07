@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allow manual runs from the Actions tab
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Avoid sqlx compile-time query checks (no offline cache yet)
+  SQLX_OFFLINE: false
+
+jobs:
+  # ===========================================================================
+  # Job 1: Format & Lint (fast gate — runs first)
+  # ===========================================================================
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82.0"
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: lint-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: cargo fmt — check formatting
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy — zero warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ===========================================================================
+  # Job 2: Test Suite (matrix: Linux + macOS)
+  # ===========================================================================
+  test:
+    name: Test (${{ matrix.os }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82.0"
+
+      - name: Cache Cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install SQLite (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: cargo test — all workspace crates (excluding Tauri desktop)
+        run: cargo test --workspace --exclude ctx-desktop --verbose
+
+  # ===========================================================================
+  # Job 3: cargo check (verify workspace compiles — all targets)
+  # ===========================================================================
+  check:
+    name: Cargo Check
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82.0"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: cargo check — full workspace
+        run: cargo check --workspace --all-targets
+
+  # ===========================================================================
+  # Job 4: Security Audit (cargo-audit on every push to main)
+  # ===========================================================================
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82.0"
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: cargo audit
+        # Only fail on high/critical severity advisories
+        env:
+          CARGO_AUDIT_IGNORE_SEVERITY: medium
+
+  # ===========================================================================
+  # Job 5: Docs build (ensure rustdoc compiles cleanly)
+  # ===========================================================================
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82.0"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: cargo doc — no private items, deny warnings
+        run: cargo doc --workspace --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: "-D warnings"

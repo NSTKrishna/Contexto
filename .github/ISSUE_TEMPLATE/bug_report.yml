@@ -1,0 +1,95 @@
+name: Bug Report
+description: Report unexpected behavior in Contexto
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out as much detail as possible.
+        **Never include real API keys, tokens, or credentials in bug reports.**
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Contexto is affected?
+      options:
+        - ctxd (daemon)
+        - ctx-cli (CLI)
+        - ctx-core (core types / ring buffer)
+        - ctx-db (database / search)
+        - VS Code extension
+        - Tauri desktop app
+        - CI / GitHub Actions
+        - Documentation
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `ctx --version` or `ctxd --version`
+      placeholder: "e.g. ctx 0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon / aarch64)
+        - macOS (Intel / x86_64)
+        - Linux (x86_64)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "ctxd crashes when..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: "I expected ctxd to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the issue.
+      placeholder: |
+        1. Run `ctxd`
+        2. Run `ctx status`
+        3. See error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Run `CTX_LOG_LEVEL=debug ctxd` and paste relevant output here.
+        **Remove any tokens, credentials, or personal data before pasting.**
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have removed all secrets, tokens, and credentials from logs/description
+          required: true
+        - label: I searched existing issues and this is not a duplicate
+          required: true
