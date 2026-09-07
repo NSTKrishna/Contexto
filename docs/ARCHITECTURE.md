@@ -8,12 +8,12 @@ Technical architecture reference and phase-by-phase implementation roadmap.
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│                        Developer Workstation                        │
+│                        Developer Workstation                       │
 │                                                                    │
-│  ┌───────────┐   ┌───────────┐   ┌─────────────────────────────┐  │
-│  │ VS Code   │   │ Terminal  │   │     Tauri Desktop App       │  │
-│  │ Extension │   │   Hook    │   │   (Linear/Raycast Dark UI)  │  │
-│  └─────┬─────┘   └─────┬─────┘   └──────────────┬──────────────┘  │
+│  ┌───────────┐   ┌───────────┐   ┌─────────────────────────────┐   │
+│  │ VS Code   │   │ Terminal  │   │     Tauri Desktop App       │   │
+│  │ Extension │   │   Hook    │   │   (Linear/Raycast Dark UI)  │   │
+│  └─────┬─────┘   └─────┬─────┘   └──────────────┬──────────────┘   │
 │        │               │                         │                 │
 │        │  HTTP + Bearer Token                    │                 │
 │        └───────────────┼─────────────────────────┘                 │
