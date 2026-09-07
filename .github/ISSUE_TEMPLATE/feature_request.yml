@@ -1,0 +1,71 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for Contexto
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please describe what you want and why it would be valuable.
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Relevant Phase
+      description: Which project phase does this relate to? (See ARCHITECTURE.md)
+      options:
+        - Phase 2 — ctxd daemon / MCP server
+        - Phase 3 — ctx-cli
+        - Phase 4 — VS Code extension
+        - Phase 5 — Terminal hook / redaction
+        - Phase 6 — Vector / semantic search
+        - Phase 7 — Tauri desktop app
+        - Phase 8 — Hardening / performance
+        - New phase / cross-cutting
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? What workflow is currently painful?
+      placeholder: "When I'm using ctxd, I find it hard to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you'd like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you consider? Why is your proposal better?
+
+  - type: dropdown
+    id: security_impact
+    attributes:
+      label: Security impact
+      description: Does this feature touch auth, data ingestion, or secret handling?
+      options:
+        - "No — purely additive feature"
+        - "Yes — touches auth/token handling"
+        - "Yes — touches data ingestion or redaction"
+        - "Yes — changes network exposure"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: This aligns with the project's ARCHITECTURE.md phase plan
+          required: false

@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ===========================================================================
+  # Build release binaries for macOS (Intel + Apple Silicon)
+  # ===========================================================================
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: ctx-x86_64-apple-darwin.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: ctx-aarch64-apple-darwin.tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: ctx-x86_64-unknown-linux-gnu.tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82.0"
+          targets: ${{ matrix.target }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install SQLite (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p ctx-cli -p ctxd
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/ctx dist/
+          cp target/${{ matrix.target }}/release/ctxd dist/
+          tar -czf ${{ matrix.artifact_name }} -C dist ctx ctxd
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
+  # ===========================================================================
+  # Create GitHub Release with all platform binaries
+  # ===========================================================================
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Get tag name
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Contexto ${{ steps.tag.outputs.tag }}"
+          body: |
+            ## Contexto ${{ steps.tag.outputs.tag }}
+
+            ### Installation
+
+            **macOS (Apple Silicon)**
+            ```bash
+            curl -Lo ctx.tar.gz https://github.com/NSTKrishna/Contexto/releases/download/${{ steps.tag.outputs.tag }}/ctx-aarch64-apple-darwin.tar.gz
+            tar -xzf ctx.tar.gz && sudo mv ctx ctxd /usr/local/bin/
+            ```
+
+            **macOS (Intel)**
+            ```bash
+            curl -Lo ctx.tar.gz https://github.com/NSTKrishna/Contexto/releases/download/${{ steps.tag.outputs.tag }}/ctx-x86_64-apple-darwin.tar.gz
+            tar -xzf ctx.tar.gz && sudo mv ctx ctxd /usr/local/bin/
+            ```
+
+            **Linux**
+            ```bash
+            curl -Lo ctx.tar.gz https://github.com/NSTKrishna/Contexto/releases/download/${{ steps.tag.outputs.tag }}/ctx-x86_64-unknown-linux-gnu.tar.gz
+            tar -xzf ctx.tar.gz && sudo mv ctx ctxd /usr/local/bin/
+            ```
+
+            ### Quick Start
+            ```bash
+            ctxd &          # Start the daemon
+            ctx status      # Check daemon status
+            ctx search "sqlx migration"  # Search your context
+            ```
+
+            See [ARCHITECTURE.md](https://github.com/NSTKrishna/Contexto/blob/main/docs/ARCHITECTURE.md) for the full phase roadmap.
+          files: artifacts/**/*.tar.gz
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
