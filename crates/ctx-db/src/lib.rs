@@ -412,6 +412,22 @@ impl ContextoDb {
         Ok(())
     }
 
+    /// Abandon a task by ID (sets status to 'abandoned' without summarization).
+    pub async fn abandon_task(&self, task_id: uuid::Uuid) -> Result<()> {
+        let rows = sqlx::query(
+            "UPDATE tasks SET status = 'abandoned', stopped_at = datetime('now')
+             WHERE id = ? AND status IN ('active', 'paused')",
+        )
+        .bind(task_id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        if rows.rows_affected() == 0 {
+            warn!("abandon_task: task {task_id} not found or already terminal");
+        }
+        Ok(())
+    }
+
     /// List all tasks, ordered by start time descending.
     pub async fn list_tasks(&self, limit: u32) -> Result<Vec<Task>> {
         let rows = sqlx::query(
