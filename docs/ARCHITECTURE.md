@@ -155,7 +155,7 @@ loop {
 
 ---
 
-### Phase 2 — `ctxd` Daemon + MCP Server
+### Phase 2 — `ctxd` Daemon + MCP Server ✅
 **Goal:** REST API live + MCP dogfooding begins immediately.
 
 > **Why MCP in Phase 2?** Once `ctxd` has a basic MCP interface, your AI coding

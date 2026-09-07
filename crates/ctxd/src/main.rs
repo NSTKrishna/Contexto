@@ -2,83 +2,40 @@
 //!
 //! The central daemon for the Contexto Universal Developer Context Manager.
 //!
-//! ## Responsibilities
-//! - Serves a REST API for the CLI, VS Code extension, and Tauri desktop app
-//! - Serves an MCP (Model Context Protocol) stdio server for AI agent integration
-//! - Manages the ingestion ring buffer → SQLite batch writer pipeline
-//! - Generates and guards the auth token (`~/.ctx/auth_token`, mode 0600)
+//! ## Startup Sequence
 //!
-//! ## Security: DNS Rebinding / CSRF Guard
+//! 1. Initialize structured tracing (JSON logs in production, pretty in dev)
+//! 2. Load `.env` if present
+//! 3. Generate / refresh auth token → `~/.ctx/auth_token` (mode 0600)
+//! 4. Open SQLite database → `~/.ctx/ctx.db` (WAL mode, FTS5)
+//! 5. Create ingestion ring buffer (1,000 event capacity)
+//! 6. Spawn `BatchWriter` (drains ring buffer → SQLite every 500ms or 50 events)
+//! 7. Spawn MCP stdio server (JSON-RPC 2.0 over stdin/stdout)
+//! 8. Bind axum REST API on `127.0.0.1:8942`
+//! 9. Await Ctrl+C → graceful shutdown
 //!
-//! On startup, ctxd generates a cryptographically secure random token and
-//! writes it to `~/.ctx/auth_token` with permissions 0600 (user-read-only).
+//! ## Security
 //!
-//! Every inbound HTTP request MUST include:
-//! ```text
-//! Authorization: Bearer <token>
-//! ```
-//! Requests without this header are rejected with HTTP 401.
+//! All REST endpoints require `Authorization: Bearer <token>`.
+//! The token is generated fresh on every daemon start and stored at
+//! `~/.ctx/auth_token` (0600). Clients read this file to authenticate.
 //!
-//! This prevents malicious webpages from calling the daemon via `fetch()` on
-//! the loopback address (DNS rebinding / direct loopback attack vector).
+//! ## MCP Dogfood Loop
 //!
-//! ## MCP Integration (Phase 2)
-//! Moving MCP to Phase 2 allows AI coding agents (Claude, Cursor, Antigravity)
-//! to query their own project context while building the rest of Contexto.
-//! This "dogfooding" loop dramatically accelerates development velocity.
+//! With the MCP server active from Phase 2, the AI agent building Contexto
+//! can call `get_context` / `search_context` to track its own progress — a
+//! positive feedback loop that accelerates all subsequent phases.
 
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::RngCore;
+use ctx_core::ingestion_buffer;
+use ctx_db::{BatchWriter, ContextoDb};
+use tokio::sync::broadcast;
 
-// =============================================================================
-// Auth Token
-// =============================================================================
-
-/// Generate a cryptographically secure 32-byte random auth token,
-/// write it to `~/.ctx/auth_token` with mode 0600, and return the token string.
-///
-/// # Errors
-/// Returns an error if the token cannot be written to disk.
-pub fn init_auth_token() -> Result<String> {
-    let ctx_dir = auth_token_path()
-        .parent()
-        .expect("auth_token_path must have a parent")
-        .to_path_buf();
-
-    // Create ~/.ctx/ if it doesn't exist
-    fs::create_dir_all(&ctx_dir)?;
-
-    // Generate 32 bytes of cryptographically secure randomness
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
-
-    let token_path = auth_token_path();
-    fs::write(&token_path, &token)?;
-
-    // Set permissions to 0600 (owner read/write only)
-    let mut perms = fs::metadata(&token_path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(&token_path, perms)?;
-
-    tracing::info!(
-        "Auth token written to {} (mode 0600)",
-        token_path.display()
-    );
-
-    Ok(token)
-}
-
-/// Returns the canonical path for the auth token file.
-fn auth_token_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".ctx").join("auth_token")
-}
+mod api;
+mod auth;
+mod mcp;
 
 // =============================================================================
 // Entry Point
@@ -86,7 +43,7 @@ fn auth_token_path() -> PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize structured logging
+    // ── 1. Tracing ────────────────────────────────────────────────────────────
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -95,66 +52,103 @@ async fn main() -> Result<()> {
         .with_target(true)
         .init();
 
-    // Load .env if present
+    // ── 2. .env ───────────────────────────────────────────────────────────────
     let _ = dotenvy::dotenv();
 
     tracing::info!("==============================================");
     tracing::info!("  ctxd — Contexto Daemon v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("==============================================");
 
-    // --- Security: Initialize auth token ---
-    let _auth_token = init_auth_token()?;
-    tracing::info!("✅ Auth token initialized (all requests require Bearer token)");
+    // ── 3. Auth token ─────────────────────────────────────────────────────────
+    let token_str = auth::init_auth_token()?;
+    let token = Arc::new(token_str);
+    tracing::info!("✅ Auth token ready  ({})", auth::auth_token_path().display());
 
-    // --- Phase 1: Initialize database ---
-    tracing::info!("⏳ ctx-db: Phase 1 — database not yet implemented");
+    // ── 4. Database ───────────────────────────────────────────────────────────
+    let db_path = auth::db_path();
+    let db_path_str = db_path.to_string_lossy().to_string();
+    let db = Arc::new(ContextoDb::open(&db_path_str).await?);
+    tracing::info!("✅ Database ready    ({db_path_str})");
 
-    // --- Phase 2: Start REST API + MCP server ---
-    tracing::info!("⏳ REST API + MCP server: Phase 2 — not yet implemented");
+    // ── 5. Ring buffer ────────────────────────────────────────────────────────
+    let (tx, rx) = ingestion_buffer();
+    let tx = Arc::new(tx);
+    tracing::info!(
+        "✅ Ring buffer ready (capacity={})",
+        ctx_core::RING_BUFFER_CAPACITY
+    );
 
+    // ── 6. BatchWriter ────────────────────────────────────────────────────────
+    let writer = BatchWriter::new(rx, (*db).clone());
+    tokio::spawn(writer.run());
+    tracing::info!("✅ BatchWriter spawned (flush_interval=500ms, max_batch=50)");
+
+    // ── 7. MCP stdio server ───────────────────────────────────────────────────
+    let mcp_db = db.clone();
+    tokio::spawn(mcp::run_stdio_server(mcp_db));
+    tracing::info!("✅ MCP stdio server spawned (JSON-RPC 2.0 on stdin/stdout)");
+
+    // ── 8. SSE broadcast channel ──────────────────────────────────────────────
+    // Capacity 256: at 50 events/sec, this gives ~5s of lag tolerance.
+    let (sse_tx, _) = broadcast::channel::<ctx_core::ContextEvent>(256);
+
+    // ── 9. Axum REST API ──────────────────────────────────────────────────────
+    let state = api::AppState {
+        db,
+        tx,
+        token: token.clone(),
+        started_at: chrono::Utc::now(),
+        sse_tx,
+    };
+
+    let router = api::build_router(state);
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 8942));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    tracing::info!("✅ REST API listening on http://{addr}");
     tracing::info!("");
-    tracing::info!("ctxd Phase 0 stub started successfully.");
-    tracing::info!("Next: Implement ctx-db (Phase 1), then ctxd REST + MCP (Phase 2).");
+    tracing::info!("  TOKEN:  cat ~/.ctx/auth_token");
+    tracing::info!("  HEALTH: curl -H 'Authorization: Bearer ...' http://127.0.0.1:8942/status");
     tracing::info!("");
 
-    // Block indefinitely (Phase 2 will replace this with axum server loop)
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("Received Ctrl+C — ctxd shutting down gracefully.");
+    // Serve until Ctrl+C
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
+    tracing::info!("ctxd shut down gracefully. Goodbye.");
     Ok(())
 }
 
 // =============================================================================
-// Tests
+// Shutdown Signal
 // =============================================================================
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Await either Ctrl+C (Unix: also SIGTERM) for graceful shutdown.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
 
-    #[test]
-    fn test_auth_token_path() {
-        let path = auth_token_path();
-        assert!(path.to_string_lossy().contains(".ctx/auth_token"));
-    }
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
 
-    #[tokio::test]
-    async fn test_auth_token_generation() {
-        // Use a temp dir to avoid stomping on real auth token during tests
-        let tmp = tempfile::tempdir().expect("temp dir");
-        std::env::set_var("HOME", tmp.path().to_str().unwrap());
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
 
-        let result = init_auth_token();
-        assert!(result.is_ok(), "auth token init should succeed: {:?}", result);
-
-        let token = result.unwrap();
-        assert!(!token.is_empty(), "token must not be empty");
-        assert!(token.len() >= 40, "token must be at least 40 chars (32 bytes base64url)");
-
-        // Verify file permissions
-        let path = auth_token_path();
-        let meta = std::fs::metadata(&path).expect("auth_token file must exist");
-        let mode = meta.permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "auth_token must be mode 0600");
+    tokio::select! {
+        () = ctrl_c => {
+            tracing::info!("Received Ctrl+C — shutting down...");
+        }
+        () = terminate => {
+            tracing::info!("Received SIGTERM — shutting down...");
+        }
     }
 }
