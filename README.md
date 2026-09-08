@@ -37,6 +37,7 @@ As developers, we switch between terminals, code editors, git branches, browser 
 * **🤖 Native MCP Server (`ctxd --mcp`):** Out-of-the-box support for Claude Desktop, Cursor, Antigravity, and any MCP-compatible AI agent, enabling bidirectional context memory.
 * **💻 High-Density CLI (`ctx`):** Fast, ergonomic command-line tool with rich terminal formatting and JSON output support.
 * **⏱️ Living Tasks:** Track active coding sessions (`ctx task start <name>`, `ctx task stop`), automatically calculating durations and aggregating events for PR descriptions.
+* **🤖 Automated PR Code Reviewer:** GitHub Actions integration ([`docs/PR_REVIEW_BOT.md`](docs/PR_REVIEW_BOT.md)) evaluating PR diffs for correctness, security, data loss, and breaking changes with zero-noise reporting.
 * **🎨 Linear / Raycast Developer Dark Design:** Built to the highest visual density and design standards ([`docs/DESIGN.md`](docs/DESIGN.md)) for upcoming VS Code and Tauri desktop integrations.
 
 ---
