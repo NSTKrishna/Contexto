@@ -26,7 +26,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Ensure Trusted Base Scripts
+        run: |
+          # Prevent Pwn Request: If base branch contains scripts, enforce execution of trusted base scripts
+          BASE_REF="origin/${{ github.base_ref || 'main' }}"
+          if git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
+            if git cat-file -e "$BASE_REF:scripts/omni_pr_review.py" 2>/dev/null; then
+              echo "Enforcing trusted scripts and prompts from $BASE_REF"
+              git checkout "$BASE_REF" -- scripts/ prompts/
+            fi
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5

@@ -34,6 +34,12 @@ _BACKEND_STRIP_PATTERNS = [
     re.compile(r"\[DeepWiki\]\(.*?\)", re.IGNORECASE),
     re.compile(r"https?://(?:www\.)?deepwiki\.com\S*", re.IGNORECASE),
     re.compile(r"https?://(?:www\.)?devin\.ai\S*", re.IGNORECASE),
+    re.compile(r"api\.devin\.ai\S*", re.IGNORECASE),
+    re.compile(r"devin\.ai\S*", re.IGNORECASE),
+    re.compile(r"deepwiki\S*", re.IGNORECASE),
+    re.compile(r"Cognition(?:\'s)?", re.IGNORECASE),
+    re.compile(r"^.*?bitflicker64/Termstory.*$", re.MULTILINE | re.IGNORECASE),
+    re.compile(r"^.*?Note on indexing coverage.*$", re.MULTILINE | re.IGNORECASE),
     re.compile(r"^(?:View|Check|Open|See)\s+(?:this|the|our)\s+(?:search|result|wiki|page)[^\n]*", re.MULTILINE | re.IGNORECASE),
     re.compile(r"Powered by[^\n]*", re.IGNORECASE),
 ]
