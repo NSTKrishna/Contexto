@@ -62,7 +62,10 @@ async fn main() -> Result<()> {
     // ── 3. Auth token ─────────────────────────────────────────────────────────
     let token_str = auth::init_auth_token()?;
     let token = Arc::new(token_str);
-    tracing::info!("✅ Auth token ready  ({})", auth::auth_token_path().display());
+    tracing::info!(
+        "✅ Auth token ready  ({})",
+        auth::auth_token_path().display()
+    );
 
     // ── 4. Database ───────────────────────────────────────────────────────────
     let db_path = auth::db_path();

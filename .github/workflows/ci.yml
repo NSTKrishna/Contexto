@@ -32,7 +32,7 @@ jobs:
       - name: Install Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.82.0"
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Cache Cargo registry & build artifacts
@@ -65,7 +65,7 @@ jobs:
       - name: Install Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.82.0"
+          toolchain: stable
 
       - name: Cache Cargo registry & build artifacts
         uses: Swatinem/rust-cache@v2
@@ -93,7 +93,7 @@ jobs:
       - name: Install Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.82.0"
+          toolchain: stable
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -118,16 +118,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.82.0"
+          toolchain: stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
       - name: Run cargo audit
-        run: cargo audit
-        # Only fail on high/critical severity advisories
-        env:
-          CARGO_AUDIT_IGNORE_SEVERITY: medium
+        # Ignore RUSTSEC-2023-0071 (rsa 0.9.10 Marvin Attack - medium severity, no fix available)
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
   # ===========================================================================
   # Job 5: Docs build (ensure rustdoc compiles cleanly)
@@ -142,7 +140,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.82.0"
+          toolchain: stable
 
       - name: Cache
         uses: Swatinem/rust-cache@v2

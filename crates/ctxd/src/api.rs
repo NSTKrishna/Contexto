@@ -215,7 +215,7 @@ impl ApiError {
 
 /// `POST /events` — Ingest a ContextEvent into the ring buffer.
 ///
-/// Returns `202 Accepted` immediately after queuing. The BatchWriter
+/// Returns `202 Accepted` immediately after queuing. The `BatchWriter`
 /// will persist the event to SQLite within 500ms or when 50 events accumulate.
 ///
 /// Returns `400 Bad Request` if the source enum is invalid.
@@ -257,19 +257,16 @@ pub async fn ingest_event(
     let _ = state.sse_tx.send(event.clone());
 
     // Queue into ring buffer → 202 Accepted
-    match state.tx.try_send(event) {
-        Ok(()) => {
-            tracing::debug!("Event queued to ring buffer");
-            StatusCode::ACCEPTED.into_response()
-        }
-        Err(_) => {
-            tracing::warn!("Ring buffer full — event dropped");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                ApiError::new("Ring buffer full. Retry in a moment."),
-            )
-                .into_response()
-        }
+    if state.tx.try_send(event).is_ok() {
+        tracing::debug!("Event queued to ring buffer");
+        StatusCode::ACCEPTED.into_response()
+    } else {
+        tracing::warn!("Ring buffer full — event dropped");
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::new("Ring buffer full. Retry in a moment."),
+        )
+            .into_response()
     }
 }
 
@@ -286,7 +283,10 @@ pub async fn get_context(
         match src.parse() {
             Ok(s) => filter.source = Some(s),
             Err(_) => {
-                return (StatusCode::BAD_REQUEST, ApiError::new(format!("Unknown source: '{src}'")))
+                return (
+                    StatusCode::BAD_REQUEST,
+                    ApiError::new(format!("Unknown source: '{src}'")),
+                )
                     .into_response()
             }
         }
@@ -494,7 +494,8 @@ mod tests {
 
     async fn test_app() -> (Router, Arc<String>) {
         let db = Arc::new(ContextoDb::open(":memory:").await.expect("in-memory DB"));
-        let (tx, _rx) = ingestion_buffer();
+        let (tx, mut rx) = ingestion_buffer();
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let (sse_tx, _) = broadcast::channel(256);
         let token = Arc::new("test-token-abc123".to_string());
 

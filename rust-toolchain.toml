@@ -2,7 +2,7 @@
 # Pinned Rust compiler version for the Contexto monorepo.
 # Ensures consistent compilation across desktop, CLI, daemon, and CI.
 # Update intentionally and test across all crates before bumping.
-channel = "1.82.0"
+channel = "stable"
 components = [
     "rustfmt",          # Code formatter
     "clippy",           # Linter

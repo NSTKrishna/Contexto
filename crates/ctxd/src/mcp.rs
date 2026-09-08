@@ -382,10 +382,7 @@ async fn tool_remember(db: &ContextoDb, id: Option<Value>, args: Value) -> JsonR
         }
     };
 
-    let label = args["label"]
-        .as_str()
-        .unwrap_or("AI note")
-        .to_string();
+    let label = args["label"].as_str().unwrap_or("AI note").to_string();
 
     let event = ContextEvent::new(EventSource::Mcp, label, note);
 
@@ -443,7 +440,11 @@ fn format_events_as_markdown(events: &[ContextEvent]) -> String {
         .map(|e| {
             let ts = e.timestamp.format("%Y-%m-%d %H:%M UTC");
             let source = &e.source;
-            let redacted = if e.was_redacted { " ⚠️ redacted" } else { "" };
+            let redacted = if e.was_redacted {
+                " ⚠️ redacted"
+            } else {
+                ""
+            };
             format!(
                 "**[{source}] {label}** _{ts}{redacted}_\n```\n{content}\n```",
                 label = e.label,
@@ -463,8 +464,7 @@ fn truncate_for_context(s: &str, max_chars: usize) -> &str {
         &s[..s
             .char_indices()
             .nth(max_chars)
-            .map(|(i, _)| i)
-            .unwrap_or(max_chars)]
+            .map_or(max_chars, |(i, _)| i)]
     }
 }
 
@@ -481,7 +481,7 @@ mod tests {
         Arc::new(ContextoDb::open(":memory:").await.expect("in-memory DB"))
     }
 
-    fn make_request(method: &str, params: Value) -> String {
+    fn make_request(method: &str, params: &Value) -> String {
         serde_json::to_string(&json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -494,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn test_initialize_handshake() {
         let db = test_db().await;
-        let raw = make_request("initialize", json!({ "protocolVersion": "2024-11-05" }));
+        let raw = make_request("initialize", &json!({ "protocolVersion": "2024-11-05" }));
         let resp = handle_request(&db, &raw).await;
 
         assert!(resp.error.is_none());
@@ -506,7 +506,7 @@ mod tests {
     #[tokio::test]
     async fn test_tools_list_returns_four_tools() {
         let db = test_db().await;
-        let raw = make_request("tools/list", json!({}));
+        let raw = make_request("tools/list", &json!({}));
         let resp = handle_request(&db, &raw).await;
 
         assert!(resp.error.is_none());
@@ -527,7 +527,10 @@ mod tests {
 
         let resp = handle_request(&db, &raw).await;
         assert!(resp.error.is_none());
-        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert!(text.contains("No context events"), "got: {text}");
     }
 
@@ -560,7 +563,11 @@ mod tests {
         let db = test_db().await;
 
         // Seed data
-        let event = ContextEvent::new(EventSource::Manual, "arch note", "Use ring buffer mpsc channel for back-pressure");
+        let event = ContextEvent::new(
+            EventSource::Manual,
+            "arch note",
+            "Use ring buffer mpsc channel for back-pressure",
+        );
         db.insert_events_batch(&[event]).await.unwrap();
 
         let raw = serde_json::to_string(&json!({
@@ -576,8 +583,14 @@ mod tests {
 
         let resp = handle_request(&db, &raw).await;
         assert!(resp.error.is_none());
-        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
-        assert!(text.contains("ring buffer"), "search should find seeded event, got: {text}");
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            text.contains("ring buffer"),
+            "search should find seeded event, got: {text}"
+        );
     }
 
     #[tokio::test]
@@ -593,14 +606,17 @@ mod tests {
 
         let resp = handle_request(&db, &raw).await;
         assert!(resp.error.is_none());
-        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert!(text.contains("No active task"), "got: {text}");
     }
 
     #[tokio::test]
     async fn test_unknown_method_returns_error() {
         let db = test_db().await;
-        let raw = make_request("unknown/method", json!({}));
+        let raw = make_request("unknown/method", &json!({}));
         let resp = handle_request(&db, &raw).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
