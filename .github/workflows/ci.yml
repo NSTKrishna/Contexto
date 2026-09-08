@@ -124,10 +124,8 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Run cargo audit
-        run: cargo audit
-        # Only fail on high/critical severity advisories
-        env:
-          CARGO_AUDIT_IGNORE_SEVERITY: medium
+        # Ignore RUSTSEC-2023-0071 (rsa 0.9.10 Marvin Attack - medium severity, no fix available)
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
   # ===========================================================================
   # Job 5: Docs build (ensure rustdoc compiles cleanly)
