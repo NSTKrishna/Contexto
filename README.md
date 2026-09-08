@@ -43,41 +43,58 @@ As developers, we switch between terminals, code editors, git branches, browser 
 
 ## 🏛 Architecture
 
-```text
- Event Sources (Terminal, IDE, Git, Manual)
-        │
-        ▼ HTTP 202 Ingestion (< 1ms)
- ┌────────────────────────────────┐
- │ Ring Buffer                    │ tokio::sync::mpsc::channel(1000)
- │ (ctx-core)                     │
- └───────────────┬────────────────┘
-                 │ Drained every 500ms OR 50 events
-                 ▼
- ┌────────────────────────────────┐
- │ BatchWriter                    │ Single background task
- │ (ctx-db)                       │ BEGIN / 50× INSERT / COMMIT
- └───────────────┬────────────────┘
-                 │
-                 ▼
- ┌────────────────────────────────┐
- │ SQLite (WAL mode)              │ ~/.ctx/ctx.db
- │  - context_events (raw events) │
- │  - events_fts (BM25 search)    │
- │  - tasks (session tracking)    │
- └───────────────┬────────────────┘
-                 │
-       ┌─────────┴─────────┐
-       ▼                   ▼
- ┌───────────┐       ┌───────────┐
- │ REST API  │       │ MCP Server│ (stdio JSON-RPC 2.0)
- │ (127.0.0.1:8942)  │ (ctxd --mcp)
- └─────┬─────┘       └─────┬─────┘
-       │                   │
- ┌─────┴───────┐           ▼
- │             │    AI Assistants
- ▼             ▼    (Claude Desktop, Cursor, Antigravity)
-ctx CLI     VS Code Extension / Tauri App
+```mermaid
+flowchart TD
+    %% Event Sources
+    A["📥 Event Sources"]
+    A1["Terminal"]
+    A2["IDE"]
+    A3["Git"]
+    A4["Manual"]
+
+    A --> A1
+    A --> A2
+    A --> A3
+    A --> A4
+
+    A --> B["⚡ HTTP 202 Ingestion<br/>< 1ms"]
+
+    %% Core
+    B --> C["🔄 Ring Buffer<br/><b>ctx-core</b><br/>tokio::sync::mpsc::channel(1000)"]
+
+    C -->|"Every 500ms<br/>OR 50 events"| D["📝 BatchWriter<br/><b>ctx-db</b><br/>Single background task<br/>BEGIN → 50× INSERT → COMMIT"]
+
+    %% Database
+    D --> E[("🗄️ SQLite<br/><b>WAL mode</b><br/>~/.ctx/ctx.db")]
+
+    E --> E1["context_events<br/>Raw events"]
+    E --> E2["events_fts<br/>BM25 search"]
+    E --> E3["tasks<br/>Session tracking"]
+
+    %% Interfaces
+    E --> F["🌐 REST API<br/>127.0.0.1:8942"]
+    E --> G["🔌 MCP Server<br/>stdio JSON-RPC 2.0<br/><code>ctxd --mcp</code>"]
+
+    %% REST consumers
+    F --> H["ctx CLI"]
+    F --> I["VS Code Extension"]
+    F --> J["Tauri App"]
+
+    %% MCP consumers
+    G --> K["🤖 AI Assistants"]
+    K --> K1["Claude Desktop"]
+    K --> K2["Cursor"]
+    K --> K3["Antigravity"]
+
+    %% Styling
+
+    class A,A1,A2,A3,A4 source
+    class B,C,D core
+    class E,E1,E2,E3 db
+    class F,G,H,I,J api
+    class K,K1,K2,K3 ai
 ```
+
 
 ### Workspace Structure
 
