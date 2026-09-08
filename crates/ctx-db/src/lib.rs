@@ -31,9 +31,9 @@
 //! `sqlite-vss` relies on FAISS C++ bindings — unreliable to compile inside
 //! Tauri for arm64 macOS. FTS5 is built into SQLite with zero extra deps
 //! and gives sub-millisecond BM25 search. Vector search is deferred to
-//! Phase 6 (fastembed-rs + LanceDB embedded).
+//! Phase 6 (fastembed-rs + `LanceDB` embedded).
 //!
-//! ## Batch Writer — preventing SQLITE_BUSY
+//! ## Batch Writer — preventing `SQLITE_BUSY`
 //!
 //! At 200 events/sec burst, per-event INSERTs cause `SQLITE_BUSY` lock
 //! contention. The `BatchWriter` drains the ring buffer and batches writes
@@ -54,7 +54,7 @@ use ctx_core::{ContextEvent, EventFilter, EventSource, IngestionReceiver, Task, 
 // Constants
 // =============================================================================
 
-/// How often the BatchWriter flushes even if the batch isn't full.
+/// How often the `BatchWriter` flushes even if the batch isn't full.
 const BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Maximum events per batch before forcing an early flush.
@@ -84,20 +84,34 @@ impl ContextoDb {
     pub async fn open(db_path: &str) -> Result<Self> {
         info!("Opening database: {db_path}");
 
-        let options = SqliteConnectOptions::new()
-            .filename(db_path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            // Tune SQLite for our write-heavy workload
-            .pragma("cache_size", "-32000")   // 32MB page cache
-            .pragma("temp_store", "memory")
-            .pragma("mmap_size", "268435456") // 256MB mmap
-            .pragma("foreign_keys", "ON");
+        let is_memory = db_path == ":memory:" || db_path.contains("mode=memory");
 
-        let pool = SqlitePool::connect_with(options)
-            .await
-            .with_context(|| format!("Failed to open SQLite database at {db_path}"))?;
+        let mut options = SqliteConnectOptions::new()
+            .filename(db_path)
+            .create_if_missing(true);
+
+        if is_memory {
+            options = options.shared_cache(true);
+        } else {
+            options = options
+                .journal_mode(SqliteJournalMode::Wal)
+                .synchronous(SqliteSynchronous::Normal)
+                // Tune SQLite for our write-heavy workload
+                .pragma("cache_size", "-32000") // 32MB page cache
+                .pragma("temp_store", "memory")
+                .pragma("mmap_size", "268435456") // 256MB mmap
+                .pragma("foreign_keys", "ON");
+        }
+
+        let pool = if is_memory {
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+        } else {
+            SqlitePool::connect_with(options).await
+        }
+        .with_context(|| format!("Failed to open SQLite database at {db_path}"))?;
 
         // Run embedded SQL migrations
         Self::run_migrations(&pool).await?;
@@ -141,12 +155,11 @@ impl ContextoDb {
 
         for (name, sql) in migrations {
             // Skip already-applied migrations (idempotent)
-            let already_applied: bool =
-                sqlx::query("SELECT 1 FROM _ctx_migrations WHERE name = ?")
-                    .bind(name)
-                    .fetch_optional(pool)
-                    .await?
-                    .is_some();
+            let already_applied: bool = sqlx::query("SELECT 1 FROM _ctx_migrations WHERE name = ?")
+                .bind(name)
+                .fetch_optional(pool)
+                .await?
+                .is_some();
 
             if already_applied {
                 debug!("Migration '{name}' already applied — skipping");
@@ -154,16 +167,10 @@ impl ContextoDb {
             }
 
             info!("Applying migration: {name}");
-            // Execute each statement separately (SQLite doesn't support multi-statement exec)
-            for stmt in sql.split(';') {
-                let stmt = stmt.trim();
-                if !stmt.is_empty() {
-                    sqlx::query(stmt)
-                        .execute(pool)
-                        .await
-                        .with_context(|| format!("Migration '{name}' failed on statement: {stmt}"))?;
-                }
-            }
+            sqlx::raw_sql(sql)
+                .execute(pool)
+                .await
+                .with_context(|| format!("Migration '{name}' failed"))?;
 
             sqlx::query("INSERT INTO _ctx_migrations (name) VALUES (?)")
                 .bind(name)
@@ -209,7 +216,7 @@ impl ContextoDb {
             .bind(event.source.to_string())
             .bind(&event.label)
             .bind(&event.content)
-            .bind(event.metadata.as_ref().map(|m| m.to_string()))
+            .bind(event.metadata.as_ref().map(ToString::to_string))
             .bind(i64::from(event.was_redacted))
             .bind(&event.cwd)
             .bind(&event.git_repo)
@@ -221,17 +228,18 @@ impl ContextoDb {
 
             // Update associated task's event_count
             if let Some(task_id) = &event.task_id {
-                sqlx::query(
-                    "UPDATE tasks SET event_count = event_count + 1 WHERE id = ?",
-                )
-                .bind(task_id.to_string())
-                .execute(&mut *tx)
-                .await?;
+                sqlx::query("UPDATE tasks SET event_count = event_count + 1 WHERE id = ?")
+                    .bind(task_id.to_string())
+                    .execute(&mut *tx)
+                    .await?;
             }
         }
 
         tx.commit().await?;
-        debug!("Batch committed: {inserted}/{} events inserted", events.len());
+        debug!(
+            "Batch committed: {inserted}/{} events inserted",
+            events.len()
+        );
         Ok(inserted)
     }
 
@@ -241,27 +249,12 @@ impl ContextoDb {
 
     /// Fetch recent events, ordered newest-first, with optional filtering.
     ///
-    /// Applies filters from [`EventFilter`]: source, git_repo, task_id, time range.
+    /// Applies filters from [`EventFilter`]: source, `git_repo`, `task_id`, time range.
     /// Limit is clamped to 1–200 by `EventFilter::resolved_limit()`.
     ///
     /// # Errors
     /// Returns an error if the query fails.
-    pub async fn get_recent(&self, filter: &EventFilter) -> Result<Vec<ContextEvent>> {
-        // Build dynamic WHERE clause
-        let mut conditions = vec!["1=1"];
-        let source_str;
-        let since_str;
-        let until_str;
-
-        // We build the SQL manually to avoid sqlx compile-time checks
-        // TODO(phase-2): Replace with query_builder! or sea-query for type safety
-        let mut sql = String::from(
-            r#"SELECT id, timestamp, source, label, content, metadata,
-                      was_redacted, cwd, git_repo, task_id
-               FROM context_events
-               WHERE "#,
-        );
-
+    fn build_filter_clause(filter: &EventFilter) -> (String, Vec<String>) {
         let mut where_parts: Vec<String> = Vec::new();
         let mut binds: Vec<String> = Vec::new();
 
@@ -286,13 +279,32 @@ impl ContextoDb {
             binds.push(until.to_rfc3339());
         }
 
-        if where_parts.is_empty() {
-            sql.push_str("1=1");
+        let where_clause = if where_parts.is_empty() {
+            "1=1".to_string()
         } else {
-            sql.push_str(&where_parts.join(" AND "));
-        }
+            where_parts.join(" AND ")
+        };
 
-        sql.push_str(" ORDER BY timestamp DESC LIMIT ? OFFSET ?");
+        (where_clause, binds)
+    }
+
+    /// Fetch recent events, ordered newest-first, with optional filtering.
+    ///
+    /// Applies filters from [`EventFilter`]: source, `git_repo`, `task_id`, time range.
+    /// Limit is clamped to 1–200 by `EventFilter::resolved_limit()`.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub async fn get_recent(&self, filter: &EventFilter) -> Result<Vec<ContextEvent>> {
+        let (where_clause, binds) = Self::build_filter_clause(filter);
+
+        let sql = format!(
+            r#"SELECT id, timestamp, source, label, content, metadata,
+                      was_redacted, cwd, git_repo, task_id
+               FROM context_events
+               WHERE {where_clause}
+               ORDER BY timestamp DESC LIMIT ? OFFSET ?"#
+        );
 
         let limit = filter.resolved_limit();
         let offset = filter.resolved_offset();
@@ -354,10 +366,16 @@ impl ContextoDb {
 
     /// Count total events (optionally filtered).
     pub async fn count_events(&self, filter: &EventFilter) -> Result<u64> {
-        let row = sqlx::query("SELECT COUNT(*) as cnt FROM context_events")
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(row.get::<i64, _>("cnt") as u64)
+        let (where_clause, binds) = Self::build_filter_clause(filter);
+        let sql = format!("SELECT COUNT(*) as cnt FROM context_events WHERE {where_clause}");
+
+        let mut query = sqlx::query(&sql);
+        for bind in &binds {
+            query = query.bind(bind);
+        }
+
+        let row = query.fetch_one(&self.pool).await?;
+        Ok(row.get::<i64, _>("cnt").unsigned_abs())
     }
 
     // =========================================================================
@@ -396,7 +414,7 @@ impl ContextoDb {
         row.map(|r| Self::row_to_task(&r)).transpose()
     }
 
-    /// Stop a task by ID (sets status to 'completed' and records stopped_at).
+    /// Stop a task by ID (sets status to 'completed' and records `stopped_at`).
     pub async fn stop_task(&self, task_id: uuid::Uuid) -> Result<()> {
         let rows = sqlx::query(
             "UPDATE tasks SET status = 'completed', stopped_at = datetime('now')
@@ -438,9 +456,7 @@ impl ContextoDb {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|r| Self::row_to_task(&r))
-            .collect()
+        rows.into_iter().map(|r| Self::row_to_task(&r)).collect()
     }
 
     // =========================================================================
@@ -488,11 +504,10 @@ impl ContextoDb {
         let status_str: String = row.try_get("status")?;
 
         let status = match status_str.as_str() {
-            "active" => TaskStatus::Active,
             "paused" => TaskStatus::Paused,
             "completed" => TaskStatus::Completed,
             "abandoned" => TaskStatus::Abandoned,
-            _ => TaskStatus::Active,
+            _ => TaskStatus::Active, // covers "active" + unknown values
         };
 
         Ok(Task {
@@ -509,7 +524,7 @@ impl ContextoDb {
             status,
             summary: row.try_get("summary")?,
             git_repo: row.try_get("git_repo")?,
-            event_count: row.try_get::<i64, _>("event_count")? as u32,
+            event_count: u32::try_from(row.try_get::<i64, _>("event_count")?).unwrap_or(0),
         })
     }
 }
@@ -534,7 +549,7 @@ pub struct BatchWriter {
 }
 
 impl BatchWriter {
-    /// Create a new BatchWriter.
+    /// Create a new `BatchWriter`.
     pub fn new(rx: IngestionReceiver, db: ContextoDb) -> Self {
         Self { rx, db }
     }
@@ -564,21 +579,18 @@ impl BatchWriter {
 
                 // Receive new event from any source
                 maybe_event = self.rx.recv() => {
-                    match maybe_event {
-                        Some(event) => {
-                            batch.push(event);
-                            if batch.len() >= BATCH_MAX_SIZE {
-                                Self::flush(&self.db, &mut batch).await;
-                            }
+                    if let Some(event) = maybe_event {
+                        batch.push(event);
+                        if batch.len() >= BATCH_MAX_SIZE {
+                            Self::flush(&self.db, &mut batch).await;
                         }
-                        None => {
-                            // Channel closed — drain and exit
-                            info!("BatchWriter: ingestion channel closed, flushing final batch");
-                            if !batch.is_empty() {
-                                Self::flush(&self.db, &mut batch).await;
-                            }
-                            break;
+                    } else {
+                        // Channel closed — drain and exit
+                        info!("BatchWriter: ingestion channel closed, flushing final batch");
+                        if !batch.is_empty() {
+                            Self::flush(&self.db, &mut batch).await;
                         }
+                        break;
                     }
                 }
             }
@@ -663,8 +675,16 @@ mod tests {
         let db = test_db().await;
 
         let events = vec![
-            ContextEvent::new(EventSource::Manual, "ring buffer", "Decided to use mpsc channel for ingestion"),
-            ContextEvent::new(EventSource::Manual, "vector search", "Decided to defer FAISS to Phase 6"),
+            ContextEvent::new(
+                EventSource::Manual,
+                "ring buffer",
+                "Decided to use mpsc channel for ingestion",
+            ),
+            ContextEvent::new(
+                EventSource::Manual,
+                "vector search",
+                "Decided to defer FAISS to Phase 6",
+            ),
             ContextEvent::new(EventSource::Terminal, "cargo test", "test result: ok"),
         ];
         db.insert_events_batch(&events).await.unwrap();
@@ -706,7 +726,9 @@ mod tests {
         let event = ContextEvent::new(EventSource::Manual, "note", "test");
 
         // Insert twice — second should be ignored (INSERT OR IGNORE)
-        db.insert_events_batch(&[event.clone()]).await.unwrap();
+        db.insert_events_batch(std::slice::from_ref(&event))
+            .await
+            .unwrap();
         db.insert_events_batch(&[event]).await.unwrap();
 
         let count = db.count_events(&EventFilter::new()).await.unwrap();

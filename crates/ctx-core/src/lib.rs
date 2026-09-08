@@ -391,7 +391,10 @@ mod tests {
 
     #[test]
     fn test_event_source_from_str() {
-        assert_eq!("TERM".parse::<EventSource>().unwrap(), EventSource::Terminal);
+        assert_eq!(
+            "TERM".parse::<EventSource>().unwrap(),
+            EventSource::Terminal
+        );
         assert_eq!("GIT".parse::<EventSource>().unwrap(), EventSource::Git);
         assert_eq!("IDE".parse::<EventSource>().unwrap(), EventSource::Editor);
         assert!("UNKNOWN".parse::<EventSource>().is_err());

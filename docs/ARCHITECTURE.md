@@ -200,7 +200,7 @@ async fn auth_middleware(
 
 ---
 
-### Phase 3 — `ctx-cli`
+### Phase 3 — `ctx-cli` ✅
 **Goal:** Full terminal workflow without the desktop app.
 
 Commands: `ctx status`, `ctx context`, `ctx remember <note>`, `ctx search <query>`, `ctx task start/stop/list`

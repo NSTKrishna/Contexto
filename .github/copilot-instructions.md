@@ -91,9 +91,9 @@ Event Sources (IDE, Terminal, Git)
 |-------|--------|--------|
 | 0 — Pre-codebase setup | ✅ Merged | `main` |
 | 1 — ctx-db + ctx-core | ✅ Merged | `main` |
-| 2 — ctxd REST + MCP | ⏳ Next | `phase/2-ctxd-daemon` |
-| 3 — ctx-cli | 🔜 | — |
-| 4 — VS Code extension | 🔜 | — |
+| 2 — ctxd REST + MCP | ✅ Merged | `main` |
+| 3 — ctx-cli | ✅ Merged | `main` |
+| 4 — VS Code extension | ⏳ Next | `phase/4-vscode-extension` |
 | 5 — Terminal hook + redaction | 🔜 | — |
 | 6 — Vector search | 🔜 | — |
 | 7 — Tauri desktop | 🔜 | — |

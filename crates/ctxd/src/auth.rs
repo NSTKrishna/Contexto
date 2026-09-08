@@ -97,14 +97,8 @@ pub fn init_auth_token() -> Result<String> {
 // Axum Auth Middleware
 // =============================================================================
 
-use axum::{
-    body::Body,
-    extract::State,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
 use axum::extract::Request;
+use axum::{body::Body, extract::State, http::StatusCode, middleware::Next, response::Response};
 
 /// Shared daemon state injected into every axum handler.
 ///
@@ -172,7 +166,7 @@ mod tests {
         std::env::set_var("HOME", tmp.path().to_str().unwrap());
 
         let result = init_auth_token();
-        assert!(result.is_ok(), "should succeed: {:?}", result);
+        assert!(result.is_ok(), "should succeed: {result:?}");
 
         let token = result.unwrap();
         assert!(!token.is_empty());
