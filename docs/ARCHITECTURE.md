@@ -209,13 +209,14 @@ All commands send HTTP requests to `ctxd` with the auth token from `~/.ctx/auth_
 
 ---
 
-### Phase 4 — VS Code Extension
+### Phase 4 — VS Code Extension ✅
 **Goal:** Capture editor events automatically.
 
-- TypeScript client wrapping the `ctxd` REST API
-- Event hooks: `onDidOpenTextDocument`, `onDidSaveTextDocument`, `onDidChangeTextEditorSelection`
-- Sidebar webview panel using `DESIGN.md` tokens
-- Git extension integration for automatic commit/diff capture
+- TypeScript client wrapping the `ctxd` REST API (`extensions/vscode/src/ctxdClient.ts`) with zero runtime dependencies, token rotation handling, SSE streaming, and health polling
+- Event hooks: `onDidOpenTextDocument`, `onDidSaveTextDocument`, `onDidChangeTextEditorSelection` (debounced), and `onDidChangeActiveTextEditor`
+- Sidebar webview panel (`extensions/vscode/src/sidebarProvider.ts`) with full `DESIGN.md` tokens (Linear/Raycast dark theme, live event feed, search, relative timestamps)
+- Status bar item with live daemon connectivity, event counters, and one-click capture toggle
+- Commands: `contexto.toggleCapture`, `contexto.search`, `contexto.remember`, `contexto.showStatus`
 
 ---
 

@@ -1,0 +1,133 @@
+{
+  "name": "contexto",
+  "displayName": "Contexto",
+  "description": "Universal Developer Context Manager — automatically captures editor events and provides a live context feed powered by the ctxd daemon.",
+  "version": "0.1.0",
+  "publisher": "NSTKrishna",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NSTKrishna/Contexto"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "context",
+    "developer-tools",
+    "productivity",
+    "mcp",
+    "ai"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "contexto-sidebar",
+          "title": "Contexto",
+          "icon": "$(pulse)"
+        }
+      ]
+    },
+    "views": {
+      "contexto-sidebar": [
+        {
+          "type": "webview",
+          "id": "contexto.sidebarView",
+          "name": "Context Feed"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "contexto.toggleCapture",
+        "title": "Contexto: Toggle Capture",
+        "icon": "$(record)"
+      },
+      {
+        "command": "contexto.search",
+        "title": "Contexto: Search Context"
+      },
+      {
+        "command": "contexto.remember",
+        "title": "Contexto: Remember Note"
+      },
+      {
+        "command": "contexto.showStatus",
+        "title": "Contexto: Show Daemon Status"
+      }
+    ],
+    "configuration": {
+      "title": "Contexto",
+      "properties": {
+        "contexto.selectionDebounceMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "maximum": 10000,
+          "description": "Debounce interval (ms) for selection change events. Lower values capture more granular edits but generate more traffic."
+        },
+        "contexto.daemonUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8942",
+          "scope": "application",
+          "description": "URL of the ctxd daemon REST API (must resolve to loopback)."
+        },
+        "contexto.authTokenPath": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Override path to the ctxd auth token file. Leave empty to use ~/.ctx/auth_token."
+        },
+        "contexto.captureOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture file open events."
+        },
+        "contexto.captureOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture file save events."
+        },
+        "contexto.captureSelections": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture text selection / cursor position events (debounced)."
+        },
+        "contexto.captureEditorFocus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture editor focus change events."
+        },
+        "contexto.healthCheckIntervalMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 5000,
+          "maximum": 300000,
+          "description": "Interval (ms) between daemon health checks."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test out/test/**/*.test.js",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}

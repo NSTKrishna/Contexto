@@ -105,6 +105,7 @@ flowchart TD
 | [`crates/ctx-db`](crates/ctx-db) | SQLite connection pooling (WAL mode), embedded SQL migrations, FTS5 virtual tables, and asynchronous `BatchWriter` |
 | [`crates/ctxd`](crates/ctxd) | Core background daemon running Axum REST API (`127.0.0.1:8942`), Bearer token security, SSE stream, and MCP stdio transport |
 | [`crates/ctx-cli`](crates/ctx-cli) | Terminal client binary (`ctx`) providing status, timeline, search, task management, and manual notes |
+| [`extensions/vscode`](extensions/vscode) | Official VS Code extension: automated editor event capture, status bar indicator, and Linear/Raycast dark sidebar webview |
 
 ---
 
@@ -221,6 +222,31 @@ ctx context --source manual --limit 5
 
 ---
 
+## 🧩 VS Code Extension
+
+The official **Contexto VS Code Extension** (`extensions/vscode`) seamlessly connects your editor to `ctxd`:
+
+* **Automatic Event Capture:** Monitors document open, save, selection/cursor moves (debounced), and active editor focus changes.
+* **Status Bar Indicator:** Real-time pulse icon indicating daemon connection status, captured event counts, and active task name. Click to toggle capture on/off.
+* **Sidebar Activity Bar Panel:** A rich Linear/Raycast Dark UI feed displaying live context events, active tasks, and relative timestamps with zero telemetry.
+* **Quick Commands:**
+  * `Contexto: Toggle Capture` — Pause or resume editor telemetry recording.
+  * `Contexto: Search Context` (`⌘K` inside webview or VS Code command palette) — Fast BM25 full-text search.
+  * `Contexto: Remember Note` — Prompt to save a permanent note straight from the editor.
+  * `Contexto: Show Daemon Status` — View daemon health, token budget, and database path.
+
+### Development & Installation
+
+```bash
+cd extensions/vscode
+npm install
+npm run compile
+```
+
+Press `F5` in VS Code or launch via the **Extension Development Host** to run locally.
+
+---
+
 ## 🤖 MCP Integration for AI Assistants
 
 `ctxd` implements Anthropic's **Model Context Protocol (MCP)** over `stdio` using JSON-RPC 2.0. This allows AI tools to automatically pull context and remember key insights during conversations.
@@ -322,7 +348,7 @@ curl "http://127.0.0.1:8942/search?q=cargo+test" \
 | **1** | **`ctx-core` + `ctx-db`** | SQLite + WAL mode, FTS5 BM25 search, ring buffer, BatchWriter | ✅ Completed |
 | **2** | **`ctxd` Daemon + MCP** | Axum REST API (127.0.0.1:8942), Bearer auth, MCP stdio protocol | ✅ Completed |
 | **3** | **`ctx-cli`** | Standalone terminal binary (`ctx status`, `remember`, `search`, `tasks`) | ✅ Completed |
-| **4** | **VS Code Extension** | Automatic editor event listener (file saves, diffs, active selections) | ⏳ In Progress |
+| **4** | **VS Code Extension** | Automatic editor event listener (file saves, diffs, active selections) | ✅ Completed |
 | **5** | **Terminal Hook + Redaction** | Shell hook (`.zshrc`/`.bashrc`) capturing commands with secret scrubbing | 🔜 Planned |
 | **6** | **Local Embeddings & Vector Search** | Embedded LanceDB + FastEmbed for local semantic similarity search | 🔜 Planned |
 | **7** | **Tauri Desktop App** | High-density Linear/Raycast dark UI window with global hotkey | 🔜 Planned |
