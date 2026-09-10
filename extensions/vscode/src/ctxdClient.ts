@@ -74,6 +74,29 @@ export interface ClientOptions {
 }
 
 // =============================================================================
+// Security Validation
+// =============================================================================
+
+/**
+ * Validates that a URL points strictly to a loopback address.
+ * Blocks any attempt to exfiltrate local credentials to remote hosts.
+ */
+export function isLoopbackUrl(urlStr: string): boolean {
+  try {
+    const url = new URL(urlStr);
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return (
+      host === "127.0.0.1" ||
+      host === "localhost" ||
+      host === "::1" ||
+      host === "0.0.0.0"
+    );
+  } catch {
+    return false;
+  }
+}
+
+// =============================================================================
 // CtxdClient
 // =============================================================================
 
@@ -85,16 +108,24 @@ export class CtxdClient {
   private _state: DaemonState = "disconnected";
   private _healthCheckTimer: NodeJS.Timeout | null = null;
   private _sseRequest: http.ClientRequest | null = null;
+  private _sseReconnectTimer: NodeJS.Timeout | null = null;
 
   /** Callbacks for state changes and incoming SSE events */
   public onStateChange: ((state: DaemonState) => void) | null = null;
   public onEvent: ((event: ContextEvent) => void) | null = null;
 
   constructor(options: Partial<ClientOptions> = {}) {
-    this._baseUrl = options.baseUrl || "http://127.0.0.1:8942";
+    const rawUrl = options.baseUrl || "http://127.0.0.1:8942";
+    if (!isLoopbackUrl(rawUrl)) {
+      throw new Error(
+        `SecurityError: ctxd daemon URL must resolve to a loopback address (127.0.0.1, localhost, [::1]) to prevent credential exfiltration. Got: ${rawUrl}`
+      );
+    }
+    this._baseUrl = rawUrl;
     this._authTokenPath =
       options.authTokenPath || path.join(os.homedir(), ".ctx", "auth_token");
     this._timeoutMs = options.timeoutMs || 5000;
+    this._loadToken();
   }
 
   // ---------------------------------------------------------------------------
@@ -166,7 +197,8 @@ export class CtxdClient {
   private _request<T>(
     method: string,
     urlPath: string,
-    body?: unknown
+    body?: unknown,
+    retried: boolean = false
   ): Promise<T> {
     return new Promise((resolve, reject) => {
       const url = new URL(urlPath, this._baseUrl);
@@ -194,9 +226,17 @@ export class CtxdClient {
         });
         res.on("end", () => {
           if (res.statusCode === 401) {
-            // Token may have rotated — re-read and retry once
-            this._refreshToken();
-            reject(new Error("Unauthorized (401) — token may have rotated"));
+            if (!retried) {
+              // Token may have rotated — re-read and retry once
+              this._refreshToken();
+              this._request<T>(method, urlPath, body, true)
+                .then(resolve)
+                .catch(reject);
+              return;
+            }
+            reject(
+              new Error("Unauthorized (401) — token authentication failed")
+            );
             return;
           }
           if (
@@ -317,6 +357,11 @@ export class CtxdClient {
 
     this._sseRequest = http.request(options, (res) => {
       if (res.statusCode !== 200) {
+        if (res.statusCode === 401) {
+          this._refreshToken();
+        }
+        res.resume(); // drain response
+        this._scheduleStreamReconnect();
         return;
       }
 
@@ -343,29 +388,37 @@ export class CtxdClient {
       });
 
       res.on("end", () => {
-        // SSE stream ended — try to reconnect after a delay
-        setTimeout(() => {
-          if (this._state === "connected") {
-            this.startEventStream();
-          }
-        }, 5000);
+        this._scheduleStreamReconnect();
       });
     });
 
     this._sseRequest.on("error", () => {
-      // SSE connection failed — retry after delay
-      setTimeout(() => {
-        if (this._state === "connected") {
-          this.startEventStream();
-        }
-      }, 5000);
+      this._scheduleStreamReconnect();
     });
 
     this._sseRequest.end();
   }
 
+  /** Schedule SSE reconnection with delay. */
+  private _scheduleStreamReconnect(delayMs: number = 5000): void {
+    this.stopEventStream();
+    if (this._sseReconnectTimer) {
+      clearTimeout(this._sseReconnectTimer);
+    }
+    this._sseReconnectTimer = setTimeout(() => {
+      this._sseReconnectTimer = null;
+      if (this._state !== "disconnected") {
+        this.startEventStream();
+      }
+    }, delayMs);
+  }
+
   /** Close the SSE connection. */
   stopEventStream(): void {
+    if (this._sseReconnectTimer) {
+      clearTimeout(this._sseReconnectTimer);
+      this._sseReconnectTimer = null;
+    }
     if (this._sseRequest) {
       this._sseRequest.destroy();
       this._sseRequest = null;
@@ -380,6 +433,11 @@ export class CtxdClient {
     if (this._state !== state) {
       this._state = state;
       this.onStateChange?.(state);
+
+      // Auto-heal event stream when daemon transitions back to connected
+      if (state === "connected" && !this._sseRequest) {
+        this.startEventStream();
+      }
     }
   }
 }

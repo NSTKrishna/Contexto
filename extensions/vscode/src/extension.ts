@@ -11,7 +11,12 @@
 
 import * as vscode from "vscode";
 import * as path from "path";
-import { CtxdClient, IngestEventRequest, DaemonState } from "./ctxdClient";
+import {
+  CtxdClient,
+  IngestEventRequest,
+  DaemonState,
+  isLoopbackUrl,
+} from "./ctxdClient";
 import { ContextoSidebarProvider } from "./sidebarProvider";
 
 // =============================================================================
@@ -34,8 +39,16 @@ export async function activate(
   const config = vscode.workspace.getConfiguration("contexto");
 
   // ── 1. Initialize ctxd client ─────────────────────────────────────────────
+  let daemonUrl = config.get<string>("daemonUrl") || "http://127.0.0.1:8942";
+  if (!isLoopbackUrl(daemonUrl)) {
+    vscode.window.showErrorMessage(
+      `Contexto: Insecure daemonUrl "${daemonUrl}" rejected. Only loopback addresses (127.0.0.1, localhost, [::1]) are permitted to prevent credential exfiltration. Falling back to default.`
+    );
+    daemonUrl = "http://127.0.0.1:8942";
+  }
+
   client = new CtxdClient({
-    baseUrl: config.get<string>("daemonUrl") || "http://127.0.0.1:8942",
+    baseUrl: daemonUrl,
     authTokenPath: config.get<string>("authTokenPath") || undefined,
     timeoutMs: 5000,
   });

@@ -78,11 +78,13 @@
         "contexto.daemonUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8942",
-          "description": "URL of the ctxd daemon REST API."
+          "scope": "application",
+          "description": "URL of the ctxd daemon REST API (must resolve to loopback)."
         },
         "contexto.authTokenPath": {
           "type": "string",
           "default": "",
+          "scope": "application",
           "description": "Override path to the ctxd auth token file. Leave empty to use ~/.ctx/auth_token."
         },
         "contexto.captureOnOpen": {
@@ -120,6 +122,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "typecheck": "tsc --noEmit",
+    "test": "node --test out/test/**/*.test.js",
     "lint": "eslint src --ext ts"
   },
   "devDependencies": {
