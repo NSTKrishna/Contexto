@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none';
+             style-src 'nonce-{{nonce}}';
+             script-src 'nonce-{{nonce}}';
+             font-src {{cspSource}};">
+  <style nonce="{{nonce}}">
+    {{style}}
+  </style>
+  <title>Contexto</title>
+</head>
+<body>
+  <!-- Status Bar -->
+  <div id="status-bar" class="status-bar">
+    <div class="status-dot" id="status-dot"></div>
+    <span class="status-label" id="status-label">Connecting...</span>
+    <span class="status-meta" id="status-meta"></span>
+  </div>
+
+  <!-- Search Bar -->
+  <div class="search-container">
+    <input
+      type="text"
+      id="search-input"
+      class="search-input"
+      placeholder="Search context..."
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <span class="search-hint">⌘K</span>
+  </div>
+
+  <!-- Active Task -->
+  <div id="active-task" class="active-task" style="display: none;">
+    <span class="task-badge">TASK</span>
+    <span class="task-name" id="task-name"></span>
+    <span class="task-duration" id="task-duration"></span>
+  </div>
+
+  <!-- Context Feed -->
+  <div id="context-feed" class="context-feed">
+    <div class="feed-loading" id="feed-loading">
+      <span class="loading-text">Loading context...</span>
+    </div>
+  </div>
+
+  <!-- Empty State -->
+  <div id="empty-state" class="empty-state" style="display: none;">
+    <div class="empty-icon">◉</div>
+    <div class="empty-title">No events yet</div>
+    <div class="empty-desc">Start editing files to capture context.</div>
+  </div>
+
+  <script nonce="{{nonce}}">
+    {{script}}
+  </script>
+</body>
+</html>
