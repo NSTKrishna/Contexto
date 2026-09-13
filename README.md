@@ -11,7 +11,7 @@
 **The invisible flight recorder for your software engineering workflow.**  
 Captures, redacts, indexes, and surfaces your developer context across terminal, IDE, Git, and AI agents.
 
-[Architecture](#-architecture) • [Quickstart](#-quickstart) • [CLI Usage](#-cli-usage) • [MCP for AI](#-mcp-integration-for-ai-assistants) • [REST API](#-rest-api-reference) • [Roadmap](#-roadmap)
+[Architecture](#-architecture) • [Quickstart](#-quickstart) • [CLI Usage](#-cli-usage) • [VS Code Extension](#-vs-code-extension) • [MCP for AI](#-mcp-integration-for-ai-assistants) • [Progress Report](docs/PROGRESS.md) • [Roadmap](#-roadmap)
 
 </div>
 

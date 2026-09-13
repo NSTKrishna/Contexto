@@ -416,10 +416,12 @@ impl ContextoDb {
 
     /// Stop a task by ID (sets status to 'completed' and records `stopped_at`).
     pub async fn stop_task(&self, task_id: uuid::Uuid) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
         let rows = sqlx::query(
-            "UPDATE tasks SET status = 'completed', stopped_at = datetime('now')
+            "UPDATE tasks SET status = 'completed', stopped_at = ?
              WHERE id = ? AND status = 'active'",
         )
+        .bind(&now)
         .bind(task_id.to_string())
         .execute(&self.pool)
         .await?;
@@ -432,10 +434,12 @@ impl ContextoDb {
 
     /// Abandon a task by ID (sets status to 'abandoned' without summarization).
     pub async fn abandon_task(&self, task_id: uuid::Uuid) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
         let rows = sqlx::query(
-            "UPDATE tasks SET status = 'abandoned', stopped_at = datetime('now')
+            "UPDATE tasks SET status = 'abandoned', stopped_at = ?
              WHERE id = ? AND status IN ('active', 'paused')",
         )
+        .bind(&now)
         .bind(task_id.to_string())
         .execute(&self.pool)
         .await?;
@@ -463,6 +467,25 @@ impl ContextoDb {
     // Row Mappers
     // =========================================================================
 
+    fn parse_timestamp(s: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+            return Ok(dt.with_timezone(&chrono::Utc));
+        }
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+            return Ok(ndt.and_utc());
+        }
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f") {
+            return Ok(ndt.and_utc());
+        }
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+            return Ok(ndt.and_utc());
+        }
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
+            return Ok(ndt.and_utc());
+        }
+        anyhow::bail!("Invalid timestamp format in DB: {s}")
+    }
+
     fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> Result<ContextEvent> {
         use std::str::FromStr;
 
@@ -475,9 +498,8 @@ impl ContextoDb {
         Ok(ContextEvent {
             id: uuid::Uuid::parse_str(&id_str)
                 .with_context(|| format!("Invalid UUID in DB: {id_str}"))?,
-            timestamp: chrono::DateTime::parse_from_rfc3339(&ts_str)
-                .with_context(|| format!("Invalid timestamp: {ts_str}"))?
-                .with_timezone(&chrono::Utc),
+            timestamp: Self::parse_timestamp(&ts_str)
+                .with_context(|| format!("Invalid timestamp: {ts_str}"))?,
             source: EventSource::from_str(&source_str).unwrap_or(EventSource::Manual),
             label: row.try_get("label")?,
             content: row.try_get("content")?,
@@ -511,20 +533,21 @@ impl ContextoDb {
         };
 
         Ok(Task {
-            id: uuid::Uuid::parse_str(&id_str)?,
+            id: uuid::Uuid::parse_str(&id_str)
+                .with_context(|| format!("Invalid UUID in DB: {id_str}"))?,
             name: row.try_get("name")?,
             description: row.try_get("description")?,
-            started_at: chrono::DateTime::parse_from_rfc3339(&started_str)?
-                .with_timezone(&chrono::Utc),
+            started_at: Self::parse_timestamp(&started_str)?,
             stopped_at: stopped_str
                 .as_deref()
-                .map(chrono::DateTime::parse_from_rfc3339)
-                .transpose()?
-                .map(|dt| dt.with_timezone(&chrono::Utc)),
+                .map(Self::parse_timestamp)
+                .transpose()?,
             status,
             summary: row.try_get("summary")?,
             git_repo: row.try_get("git_repo")?,
-            event_count: u32::try_from(row.try_get::<i64, _>("event_count")?).unwrap_or(0),
+            event_count: row
+                .try_get::<i64, _>("event_count")
+                .map_or(0, |c| u32::try_from(c).unwrap_or(0)),
         })
     }
 }
@@ -757,8 +780,54 @@ mod tests {
 
         db.stop_task(task_id).await.unwrap();
 
+        let list = db.list_tasks(10).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].status, TaskStatus::Completed);
+        assert!(list[0].stopped_at.is_some());
+
         let active = db.get_active_task().await.unwrap();
         assert!(active.is_none(), "No active task after stop");
+    }
+
+    #[tokio::test]
+    async fn test_task_abandon() {
+        let db = test_db().await;
+
+        let task = Task::new("Abandoned task");
+        let task_id = task.id;
+        db.create_task(&task).await.unwrap();
+
+        db.abandon_task(task_id).await.unwrap();
+
+        let list = db.list_tasks(10).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].status, TaskStatus::Abandoned);
+        assert!(list[0].stopped_at.is_some());
+
+        let active = db.get_active_task().await.unwrap();
+        assert!(active.is_none(), "No active task after abandon");
+    }
+
+    #[tokio::test]
+    async fn test_legacy_sqlite_timestamps() {
+        let db = test_db().await;
+
+        // Directly insert a task with SQLite's default datetime('now') format ("YYYY-MM-DD HH:MM:SS")
+        sqlx::query(
+            "INSERT INTO tasks (id, name, started_at, stopped_at, status, event_count)
+             VALUES (?, ?, '2026-09-12 12:00:00', '2026-09-12 12:30:00', 'completed', 5)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind("Legacy format task")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let list = db.list_tasks(10).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "Legacy format task");
+        assert_eq!(list[0].status, TaskStatus::Completed);
+        assert!(list[0].stopped_at.is_some());
     }
 
     #[tokio::test]
