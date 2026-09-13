@@ -103,7 +103,7 @@ Contexto/
 
 ---
 
-### Phase 1 — `ctx-db` + `ctx-core`
+### Phase 1 — `ctx-db` + `ctx-core` ✅
 **Goal:** Battle-tested data pipeline with SQLite + FTS5.
 
 **`ctx-core` additions:**

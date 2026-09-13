@@ -715,4 +715,74 @@ mod tests {
         let tasks: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(tasks.is_array());
     }
+
+    #[tokio::test]
+    async fn test_task_create_stop_list_lifecycle() {
+        let (app, token) = test_app().await;
+
+        // 1. Create a task
+        let create_body = serde_json::json!({
+            "name": "Integration test task",
+            "description": "testing lifecycle"
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/tasks")
+                    .header("Authorization", bearer(&token))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&create_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let task_id = created["id"].as_str().unwrap();
+
+        // 2. Stop the task
+        let stop_body = serde_json::json!({
+            "action": "stop"
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::PATCH)
+                    .uri(format!("/tasks/{task_id}"))
+                    .header("Authorization", bearer(&token))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&stop_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // 3. List tasks - ensure 200 OK and not 500 DB error
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::GET)
+                    .uri("/tasks")
+                    .header("Authorization", bearer(&token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["status"], "completed");
+        assert!(list[0]["stopped_at"].is_string());
+    }
 }
