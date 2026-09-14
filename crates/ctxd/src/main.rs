@@ -91,11 +91,37 @@ async fn main() -> Result<()> {
     tokio::spawn(mcp::run_stdio_server(mcp_db));
     tracing::info!("✅ MCP stdio server spawned (JSON-RPC 2.0 on stdin/stdout)");
 
-    // ── 8. SSE broadcast channel ──────────────────────────────────────────────
+    // ── 8. Background pruning loop ────────────────────────────────────────────
+    // Runs every 24 hours: prunes Layer-1 orphan events older than 30 days
+    // and reclaims freed SQLite pages via incremental_vacuum().
+    // Permanent notes (NOTE/MCP) and task-bound events are never touched.
+    let prune_db = db.clone();
+    tokio::spawn(async move {
+        use std::time::Duration;
+        let mut interval = tokio::time::interval(Duration::from_hours(24));
+        interval.tick().await; // First tick fires immediately — skip it
+        loop {
+            interval.tick().await;
+            tracing::info!("🧹 Running scheduled pruning (30-day TTL)...");
+            match prune_db.prune_and_vacuum(30).await {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        tracing::info!("🧹 Pruned {deleted} stale events and vacuumed.");
+                    } else {
+                        tracing::debug!("🧹 Pruning: no stale events found.");
+                    }
+                }
+                Err(e) => tracing::warn!("🧹 Pruning failed (non-fatal): {e:#}"),
+            }
+        }
+    });
+    tracing::info!("✅ Background pruner spawned (interval=24h, TTL=30 days)");
+
+    // ── 9. SSE broadcast channel ──────────────────────────────────────────────
     // Capacity 256: at 50 events/sec, this gives ~5s of lag tolerance.
     let (sse_tx, _) = broadcast::channel::<ctx_core::ContextEvent>(256);
 
-    // ── 9. Axum REST API ──────────────────────────────────────────────────────
+    // ── 10. Axum REST API ─────────────────────────────────────────────────────
     let state = api::AppState {
         db,
         tx,

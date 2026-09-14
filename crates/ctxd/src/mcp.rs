@@ -40,9 +40,13 @@
 //! }
 //! ```
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
-use ctx_core::{ContextEvent, EventFilter, EventSource};
+use ctx_core::{
+    distill::{extract_session_card, SessionCard},
+    ContextEvent, EventFilter, EventSource,
+};
 use ctx_db::ContextoDb;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -174,6 +178,19 @@ fn tools_list() -> Value {
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "distill_task",
+                "description": "Generate a structured SessionCard summary of a completed or abandoned task. Returns goal, files touched, commands verified, and key decisions. Use before starting a new related task to build on prior context, or to understand what was accomplished in a past session.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "UUID of the task to summarize. If omitted, summarizes the most recently completed task."
+                        }
+                    }
+                }
             }
         ]
     })
@@ -300,6 +317,7 @@ async fn dispatch_tool(
         "search_context" => tool_search_context(db, id, args).await,
         "remember" => tool_remember(db, id, args).await,
         "get_task" => tool_get_task(db, id).await,
+        "distill_task" => tool_distill_task(db, id, args).await,
         unknown => JsonRpcResponse::err(id, -32601, format!("Unknown tool: {unknown}")),
     }
 }
@@ -308,12 +326,31 @@ async fn dispatch_tool(
 // Tool Implementations
 // =============================================================================
 
+/// Token budget constants for 3-tier context assembly.
+const BUDGET_LAYER3_NOTES: u32 = 20; // up to 20 permanent notes
+const BUDGET_LAYER2_SESSIONS: u32 = 3; // active task + 2 completed sessions
+const BUDGET_LAYER1_EVENTS: u32 = 10; // 10 recent atomic events
+
 async fn tool_get_context(db: &ContextoDb, id: Option<Value>, args: Value) -> JsonRpcResponse {
-    let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as u32;
+    // ── Layer 3: Permanent knowledge base (notes + AI annotations) ────────────
+    let layer3 = match db.get_layer3_notes(BUDGET_LAYER3_NOTES).await {
+        Ok(notes) => notes,
+        Err(e) => return JsonRpcResponse::err(id, -32603, format!("DB error (layer3): {e}")),
+    };
 
+    // ── Layer 2: Active task + recent completed sessions ─────────────────────
+    let active_task = match db.get_active_task().await {
+        Ok(task) => task,
+        Err(e) => return JsonRpcResponse::err(id, -32603, format!("DB error (active task): {e}")),
+    };
+    let completed_sessions = match db.get_completed_sessions(BUDGET_LAYER2_SESSIONS - 1).await {
+        Ok(sessions) => sessions,
+        Err(e) => return JsonRpcResponse::err(id, -32603, format!("DB error (sessions): {e}")),
+    };
+
+    // ── Layer 1: Recent atomic events (non-permanent sources only) ────────────
     let mut filter = EventFilter::new();
-    filter.limit = Some(limit);
-
+    filter.limit = Some(BUDGET_LAYER1_EVENTS);
     if let Some(src) = args["source"].as_str() {
         match src.parse() {
             Ok(s) => filter.source = Some(s),
@@ -322,23 +359,79 @@ async fn tool_get_context(db: &ContextoDb, id: Option<Value>, args: Value) -> Js
             }
         }
     }
-
     if let Some(repo) = args["git_repo"].as_str() {
         filter.git_repo = Some(repo.to_string());
     }
+    let layer1 = match db.get_recent(&filter).await {
+        Ok(events) => events,
+        Err(e) => return JsonRpcResponse::err(id, -32603, format!("DB error (layer1): {e}")),
+    };
 
-    match db.get_recent(&filter).await {
-        Ok(events) => {
-            let text = format_events_as_markdown(&events);
-            JsonRpcResponse::ok(
-                id,
-                json!({
-                    "content": [{ "type": "text", "text": text }]
-                }),
-            )
+    // ── Assemble tiered context markdown ──────────────────────────────────────
+    let mut parts: Vec<String> = Vec::new();
+
+    // Layer 3 header
+    if !layer3.is_empty() {
+        parts.push("## 📌 Permanent Notes & Decisions (Layer 3)".to_string());
+        for note in &layer3 {
+            let ts = note.timestamp.format("%Y-%m-%d %H:%M UTC");
+            parts.push(format!("- **{}** _{}_\n  {}", note.label, ts, note.content));
         }
-        Err(e) => JsonRpcResponse::err(id, -32603, format!("DB error: {e}")),
+        parts.push(String::new());
     }
+
+    // Layer 2 header — active task
+    parts.push("## 🟢 Active Task (Layer 2)".to_string());
+    if let Some(task) = &active_task {
+        parts.push(format!(
+            "**{}** | Started: {} | {} events captured",
+            task.name,
+            task.started_at.format("%Y-%m-%d %H:%M UTC"),
+            task.event_count
+        ));
+        if let Some(desc) = &task.description {
+            parts.push(format!("_{desc}_"));
+        }
+    } else {
+        parts.push("_(no active task — start one with `ctx task start <name>`)_".to_string());
+    }
+    parts.push(String::new());
+
+    // Layer 2 — recent completed sessions
+    if !completed_sessions.is_empty() {
+        parts.push("## ✅ Recent Sessions (Layer 2)".to_string());
+        for session in &completed_sessions {
+            if let Some(summary_json) = &session.summary {
+                if let Some(card) = ctx_core::distill::SessionCard::from_json(summary_json) {
+                    parts.push(card.to_markdown());
+                } else {
+                    parts.push(format!("- **{}** (no card)", session.name));
+                }
+            } else {
+                parts.push(format!(
+                    "- **{}** ({} events)",
+                    session.name, session.event_count
+                ));
+            }
+        }
+        parts.push(String::new());
+    }
+
+    // Layer 1 — recent atomic events
+    parts.push("## ⚡ Recent Activity (Layer 1)".to_string());
+    if layer1.is_empty() {
+        parts.push("_(No context events captured yet.)_".to_string());
+    } else {
+        parts.push(format_events_as_markdown(&layer1));
+    }
+
+    let text = parts.join("\n");
+    JsonRpcResponse::ok(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": text }]
+        }),
+    )
 }
 
 async fn tool_search_context(db: &ContextoDb, id: Option<Value>, args: Value) -> JsonRpcResponse {
@@ -351,16 +444,24 @@ async fn tool_search_context(db: &ContextoDb, id: Option<Value>, args: Value) ->
 
     let limit = args["limit"].as_u64().unwrap_or(5).clamp(1, 20) as u32;
 
-    match db.search(&query, limit).await {
-        Ok(events) => {
-            let text = if events.is_empty() {
+    // Use snippet search for token-efficient AI retrieval.
+    // Each result is ~60 tokens (15-word window) vs. 8KB full content blob.
+    match db.search_snippets(&query, limit).await {
+        Ok(snippets) => {
+            let text = if snippets.is_empty() {
                 format!("No results found for query: '{query}'")
             } else {
-                format!(
-                    "**Search results for '{query}'** ({} found)\n\n{}",
-                    events.len(),
-                    format_events_as_markdown(&events)
-                )
+                let count = snippets.len();
+                let mut out = format!("**Search results for '{query}'** ({count} found)\n\n");
+                for (i, s) in snippets.iter().enumerate() {
+                    let ts = s.timestamp.format("%Y-%m-%d %H:%M UTC");
+                    let idx = i + 1;
+                    let src = &s.source;
+                    let lbl = &s.label;
+                    let snip = &s.snippet_text;
+                    let _ = write!(out, "{idx}. **[{src}] {lbl}** _{ts}_\n   {snip}\n\n");
+                }
+                out
             };
 
             JsonRpcResponse::ok(
@@ -372,6 +473,71 @@ async fn tool_search_context(db: &ContextoDb, id: Option<Value>, args: Value) ->
         }
         Err(e) => JsonRpcResponse::err(id, -32603, format!("Search error: {e}")),
     }
+}
+
+async fn tool_distill_task(db: &ContextoDb, id: Option<Value>, args: Value) -> JsonRpcResponse {
+    // If task_id provided, fetch that specific task; otherwise get most recent completed
+    let task_opt = if let Some(task_id_str) = args["task_id"].as_str() {
+        match task_id_str.parse::<uuid::Uuid>() {
+            Ok(task_uuid) => match db.get_task_by_id(task_uuid).await {
+                Ok(t) => t,
+                Err(e) => return JsonRpcResponse::err(id, -32603, format!("DB error: {e}")),
+            },
+            Err(_) => {
+                return JsonRpcResponse::err(
+                    id,
+                    -32602,
+                    format!("Invalid task_id UUID: '{task_id_str}'"),
+                );
+            }
+        }
+    } else {
+        // Fall back to most recently completed task
+        match db.get_completed_sessions(1).await {
+            Ok(sessions) => sessions.into_iter().next(),
+            Err(e) => return JsonRpcResponse::err(id, -32603, format!("DB error: {e}")),
+        }
+    };
+
+    let Some(task) = task_opt else {
+        return JsonRpcResponse::ok(
+            id,
+            json!({
+                "content": [{ "type": "text", "text": "No completed task found. Stop a task first with `ctx task stop`." }]
+            }),
+        );
+    };
+
+    // If a pre-computed SessionCard is stored, return it directly
+    if let Some(summary_json) = &task.summary {
+        if let Some(card) = SessionCard::from_json(summary_json) {
+            return JsonRpcResponse::ok(
+                id,
+                json!({
+                    "content": [{ "type": "text", "text": card.to_markdown() }]
+                }),
+            );
+        }
+    }
+
+    // Otherwise, compute on-demand from events
+    let mut filter = EventFilter::new();
+    filter.task_id = Some(task.id);
+    filter.limit = Some(200);
+    let events = match db.get_recent(&filter).await {
+        Ok(e) => e,
+        Err(e) => return JsonRpcResponse::err(id, -32603, format!("DB error: {e}")),
+    };
+
+    let card = extract_session_card(&task, &events);
+    let markdown = card.to_markdown();
+
+    JsonRpcResponse::ok(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": markdown }]
+        }),
+    )
 }
 
 async fn tool_remember(db: &ContextoDb, id: Option<Value>, args: Value) -> JsonRpcResponse {
@@ -504,14 +670,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tools_list_returns_four_tools() {
+    async fn test_tools_list_returns_five_tools() {
         let db = test_db().await;
         let raw = make_request("tools/list", &json!({}));
         let resp = handle_request(&db, &raw).await;
 
         assert!(resp.error.is_none());
         let tools = &resp.result.unwrap()["tools"];
-        assert_eq!(tools.as_array().unwrap().len(), 4);
+        assert_eq!(tools.as_array().unwrap().len(), 5);
     }
 
     #[tokio::test]
@@ -636,5 +802,60 @@ mod tests {
         let resp = handle_request(&db, &raw).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn test_distill_task_tool_no_completed_task() {
+        let db = test_db().await;
+        let raw = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": { "name": "distill_task", "arguments": {} },
+            "id": 6
+        }))
+        .unwrap();
+
+        let resp = handle_request(&db, &raw).await;
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("No completed task found"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn test_distill_task_tool_with_task() {
+        let db = test_db().await;
+        let task = ctx_core::Task::new("fix login auth");
+        let task_id = task.id;
+        db.create_task(&task).await.unwrap();
+
+        let event = ctx_core::ContextEvent::new(
+            ctx_core::EventSource::Terminal,
+            "cargo test",
+            "test result: ok. 42 passed",
+        )
+        .with_task(task_id);
+        db.insert_events_batch(&[event]).await.unwrap();
+
+        db.stop_task(task_id).await.unwrap();
+
+        let raw = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": { "name": "distill_task", "arguments": { "task_id": task_id.to_string() } },
+            "id": 7
+        }))
+        .unwrap();
+
+        let resp = handle_request(&db, &raw).await;
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("Session: fix login auth"), "got: {text}");
+        assert!(text.contains("Commands Verified"), "got: {text}");
     }
 }
