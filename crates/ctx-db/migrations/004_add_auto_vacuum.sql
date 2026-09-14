@@ -1,0 +1,18 @@
+-- =============================================================================
+-- Migration 004: Enable Incremental Auto-Vacuum
+-- Contexto — Universal Developer Context Manager
+-- =============================================================================
+-- Without auto-vacuum, SQLite never returns freed pages to the filesystem.
+-- After pruning thousands of Layer-1 events, the .ctx/ctx.db file stays large
+-- on disk even though most of its content has been deleted.
+--
+-- INCREMENTAL mode marks free pages in a free-list but only reclaims them
+-- to the OS when `PRAGMA incremental_vacuum(N)` is explicitly called.
+-- This gives the `BatchWriter` full write-speed (no overhead per transaction)
+-- while letting the scheduled pruning task reclaim disk space nightly.
+--
+-- Note: changing auto_vacuum mode requires a VACUUM to take effect on an
+-- existing database. On a fresh database this takes effect immediately.
+-- Existing databases without this pragma will gradually enable it on next
+-- full VACUUM or can be converted manually.
+PRAGMA auto_vacuum = INCREMENTAL;

@@ -34,7 +34,10 @@ use axum::{
     Router,
 };
 use chrono::{DateTime, Utc};
-use ctx_core::{ContextEvent, EventFilter, EventSource, IngestionSender, Task};
+use ctx_core::{
+    distill::extract_session_card, ContextEvent, EventFilter, EventSource, IngestionSender, Task,
+    TaskStatus,
+};
 use ctx_db::ContextoDb;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -92,6 +95,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/status", get(get_status))
         .route("/tasks", get(list_tasks).post(create_task))
         .route("/tasks/:id", patch(update_task))
+        .route("/tasks/:id/summary", get(task_summary))
+        .route("/prune", post(prune_events))
         // Apply auth middleware to every route
         .layer(middleware::from_fn_with_state(auth_state, require_auth))
         .layer(cors)
@@ -446,10 +451,124 @@ pub async fn update_task(
     };
 
     match result {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            // After stopping or abandoning, generate a SessionCard summary.
+            // Fetch the task and its events, then distill deterministically.
+            let db = state.db.clone();
+            tokio::spawn(async move {
+                let mut filter = EventFilter::new();
+                filter.task_id = Some(id);
+                filter.limit = Some(200);
+                filter.offset = Some(0);
+
+                match db.get_recent(&filter).await {
+                    Ok(events) => {
+                        // Fetch the stopped task directly from the tasks table
+                        match db.get_task_by_id(id).await {
+                            Ok(Some(task)) => {
+                                let card = extract_session_card(&task, &events);
+                                let json = card.to_json();
+                                if let Err(e) = db.update_task_summary(id, &json).await {
+                                    tracing::warn!("SessionCard update failed: {e:#}");
+                                } else {
+                                    tracing::info!(
+                                        "SessionCard generated for task {} ({} tokens est.)",
+                                        id,
+                                        card.token_estimate
+                                    );
+                                }
+                            }
+                            Ok(None) => tracing::warn!("task {id} not found after stop"),
+                            Err(e) => tracing::warn!("fetch task {id} failed: {e:#}"),
+                        }
+                    }
+                    Err(e) => tracing::warn!("fetch events for task {id} failed: {e:#}"),
+                }
+            });
+
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             tracing::error!("update_task error: {e:#}");
             (StatusCode::INTERNAL_SERVER_ERROR, ApiError::new("DB error")).into_response()
+        }
+    }
+}
+
+/// `GET /tasks/:id/summary` — Return the stored `SessionCard` for a task.
+///
+/// Returns `404 Not Found` if the task does not exist or has no summary yet.
+/// The summary is generated automatically when a task is stopped or abandoned.
+pub async fn task_summary(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    match state.db.get_task_by_id(id).await {
+        Ok(Some(task)) => {
+            if let Some(summary_json) = &task.summary {
+                // Parse and re-serialize as pretty JSON
+                match serde_json::from_str::<serde_json::Value>(summary_json) {
+                    Ok(card) => Json(card).into_response(),
+                    Err(_) => Json(serde_json::json!({ "raw": summary_json })).into_response(),
+                }
+            } else if task.status != TaskStatus::Active {
+                // Task is completed/abandoned but background summary generation hasn't written yet.
+                // Compute on-demand so the client gets an immediate, reliable response.
+                let mut filter = EventFilter::new();
+                filter.task_id = Some(id);
+                filter.limit = Some(200);
+                let events = state.db.get_recent(&filter).await.unwrap_or_default();
+                let card = extract_session_card(&task, &events);
+                let json = card.to_json();
+                let _ = state.db.update_task_summary(id, &json).await;
+                match serde_json::from_str::<serde_json::Value>(&json) {
+                    Ok(card_val) => Json(card_val).into_response(),
+                    Err(_) => Json(serde_json::json!({ "raw": json })).into_response(),
+                }
+            } else {
+                (
+                    StatusCode::NOT_FOUND,
+                    ApiError::new("No summary available yet for this task. Stop the task first with `ctx task stop`."),
+                )
+                    .into_response()
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            ApiError::new(format!("Task {id} not found")),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("task_summary error: {e:#}");
+            (StatusCode::INTERNAL_SERVER_ERROR, ApiError::new("DB error")).into_response()
+        }
+    }
+}
+
+/// `POST /prune` — Manually trigger TTL pruning of expired Layer-1 events.
+///
+/// Request body: `{ "days": 30 }` (optional, defaults to 30).
+///
+/// Returns `{ "deleted": N }` with the number of events pruned.
+/// Permanent notes (Manual/MCP) and task-bound events are never touched.
+pub async fn prune_events(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let days = body["days"].as_u64().unwrap_or(30) as u32;
+    let days = days.clamp(1, 365);
+
+    match state.db.prune_and_vacuum(days).await {
+        Ok(deleted) => {
+            Json(serde_json::json!({ "deleted": deleted, "days": days })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("prune error: {e:#}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::new("Pruning failed"),
+            )
+                .into_response()
         }
     }
 }
@@ -784,5 +903,96 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["status"], "completed");
         assert!(list[0]["stopped_at"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_prune_endpoint() {
+        let (app, token) = test_app().await;
+        let prune_body = serde_json::json!({ "days": 14 });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/prune")
+                    .header("Authorization", bearer(&token))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&prune_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let res: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(res["deleted"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_task_summary_endpoint() {
+        let (app, token) = test_app().await;
+
+        // 1. Create a task
+        let create_body = serde_json::json!({
+            "name": "refactor auth logic",
+            "description": "cleaning up authentication"
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/tasks")
+                    .header("Authorization", bearer(&token))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&create_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let task_id = created["id"].as_str().unwrap();
+
+        // 2. Stop the task (this triggers SessionCard generation and updates task.summary)
+        let stop_body = serde_json::json!({ "action": "stop" });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::PATCH)
+                    .uri(format!("/tasks/{task_id}"))
+                    .header("Authorization", bearer(&token))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&stop_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // 3. Get summary
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::GET)
+                    .uri(format!("/tasks/{task_id}/summary"))
+                    .header("Authorization", bearer(&token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let summary: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(summary["goal"], "refactor auth logic");
+        assert_eq!(summary["task_id"], task_id);
     }
 }

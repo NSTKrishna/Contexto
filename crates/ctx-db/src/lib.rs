@@ -39,6 +39,7 @@
 //! contention. The `BatchWriter` drains the ring buffer and batches writes
 //! into a single `BEGIN / N× INSERT / COMMIT` every 500ms or 50 events.
 
+use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -50,6 +51,9 @@ use tracing::{debug, error, info, warn};
 
 use ctx_core::{ContextEvent, EventFilter, EventSource, IngestionReceiver, Task, TaskStatus};
 
+// Pruning and vacuum utilities (impl block in prune.rs)
+mod prune;
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -59,6 +63,32 @@ const BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Maximum events per batch before forcing an early flush.
 const BATCH_MAX_SIZE: usize = 50;
+
+// =============================================================================
+// SearchSnippet — token-efficient FTS5 result
+// =============================================================================
+
+/// A search result from [`ContextoDb::search_snippets`].
+///
+/// Contains a short highlighted excerpt (~60 tokens) instead of the full
+/// event content blob. Used by the MCP `search_context` tool to avoid
+/// dumping megabytes into AI context windows.
+#[derive(Debug, Clone)]
+pub struct SearchSnippet {
+    /// UUID of the matching event.
+    pub event_id: uuid::Uuid,
+    /// Short label of the event.
+    pub label: String,
+    /// Event source.
+    pub source: EventSource,
+    /// Event timestamp.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Highlighted excerpt (~15 words around the match).
+    /// Match terms are wrapped with `«`/`»` markers.
+    pub snippet_text: String,
+    /// BM25 relevance rank (lower is more relevant in SQLite FTS5).
+    pub bm25_rank: f64,
+}
 
 // =============================================================================
 // ContextoDb — main handle
@@ -140,6 +170,10 @@ impl ContextoDb {
             (
                 "003_create_tasks",
                 include_str!("../migrations/003_create_tasks.sql"),
+            ),
+            (
+                "004_add_auto_vacuum",
+                include_str!("../migrations/004_add_auto_vacuum.sql"),
             ),
         ];
 
@@ -364,6 +398,156 @@ impl ContextoDb {
             .collect()
     }
 
+    // =========================================================================
+    // Snippet Search (Token-Efficient AI Retrieval)
+    // =========================================================================
+
+    /// FTS5 BM25 search returning highlighted snippets instead of full content.
+    ///
+    /// Each result contains ~60 tokens (a 15-word window around each match)
+    /// instead of a full 8KB content blob. At 5 results, this is ~300 tokens
+    /// vs. ~40,000 tokens with the full-content `search()` method.
+    ///
+    /// Uses the FTS5 `snippet()` auxiliary function with `«`/`»` highlight markers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the FTS5 query is malformed or the database fails.
+    pub async fn search_snippets(&self, query: &str, limit: u32) -> Result<Vec<SearchSnippet>> {
+        if query.trim().is_empty() {
+            return Ok(vec![]);
+        }
+
+        let limit = limit.clamp(1, 50);
+
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                e.id,
+                e.timestamp,
+                e.source,
+                e.label,
+                snippet(events_fts, 1, '«', '»', '...', 15) AS snippet_text,
+                f.rank AS bm25_rank
+            FROM context_events e
+            JOIN events_fts f ON e.rowid = f.rowid
+            WHERE events_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            "#,
+        )
+        .bind(query)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .with_context(|| format!("FTS5 snippet search failed for query: {query:?}"))?;
+
+        rows.into_iter()
+            .map(|row| -> Result<SearchSnippet> {
+                let id_str: String = row.try_get("id")?;
+                let ts_str: String = row.try_get("timestamp")?;
+                let source_str: String = row.try_get("source")?;
+                let rank: f64 = row.try_get("bm25_rank").unwrap_or(0.0);
+                Ok(SearchSnippet {
+                    event_id: uuid::Uuid::parse_str(&id_str)
+                        .with_context(|| format!("Invalid UUID: {id_str}"))?,
+                    label: row.try_get("label")?,
+                    source: EventSource::from_str(&source_str).unwrap_or(EventSource::Manual),
+                    timestamp: Self::parse_timestamp(&ts_str)?,
+                    snippet_text: row.try_get("snippet_text")?,
+                    bm25_rank: rank,
+                })
+            })
+            .collect()
+    }
+
+    // =========================================================================
+    // Layer 3 / Layer 2 Retrieval (MCP Context Synthesis)
+    // =========================================================================
+
+    /// Fetch permanent Layer-3 notes.
+    ///
+    /// Returns all `EventSource::Manual` ("NOTE") and `EventSource::Mcp` ("MCP")
+    /// events, ordered newest-first. These form the permanent knowledge base
+    /// injected at the top of every MCP `get_context` response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn get_layer3_notes(&self, limit: u32) -> Result<Vec<ContextEvent>> {
+        let limit = limit.clamp(1, 200);
+        let rows = sqlx::query(
+            r#"
+            SELECT id, timestamp, source, label, content, metadata,
+                   was_redacted, cwd, git_repo, task_id
+            FROM context_events
+            WHERE source IN ('NOTE', 'MCP')
+            ORDER BY timestamp DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch Layer-3 notes")?;
+
+        rows.into_iter()
+            .map(|row| Self::row_to_event(&row))
+            .collect()
+    }
+
+    /// Fetch recently completed task sessions (Layer 2).
+    ///
+    /// Returns completed tasks ordered newest-first. Their `summary` field
+    /// contains a JSON-serialized `SessionCard` when available. Used by the
+    /// MCP `get_context` tool to inject structured session handoffs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn get_completed_sessions(&self, limit: u32) -> Result<Vec<Task>> {
+        let limit = limit.clamp(1, 20);
+        let rows = sqlx::query(
+            r#"
+            SELECT id, name, description, started_at, stopped_at,
+                   status, summary, git_repo, event_count
+            FROM tasks
+            WHERE status = 'completed'
+            ORDER BY stopped_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch completed sessions")?;
+
+        rows.into_iter()
+            .map(|row| Self::row_to_task(&row))
+            .collect()
+    }
+
+    /// Update the `summary` field of a task (used after `SessionCard` extraction).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the UPDATE fails or the task is not found.
+    pub async fn update_task_summary(&self, task_id: uuid::Uuid, summary_json: &str) -> Result<()> {
+        let rows = sqlx::query("UPDATE tasks SET summary = ? WHERE id = ?")
+            .bind(summary_json)
+            .bind(task_id.to_string())
+            .execute(&self.pool)
+            .await
+            .context("Failed to update task summary")?;
+
+        if rows.rows_affected() == 0 {
+            warn!("update_task_summary: task {task_id} not found");
+        } else {
+            debug!("Updated summary for task {task_id}");
+        }
+        Ok(())
+    }
+
     /// Count total events (optionally filtered).
     pub async fn count_events(&self, filter: &EventFilter) -> Result<u64> {
         let (where_clause, binds) = Self::build_filter_clause(filter);
@@ -408,6 +592,26 @@ impl ContextoDb {
             "SELECT id, name, description, started_at, stopped_at, status, summary, git_repo, event_count
              FROM tasks WHERE status = 'active' ORDER BY started_at DESC LIMIT 1",
         )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|r| Self::row_to_task(&r)).transpose()
+    }
+
+    /// Fetch any task by its UUID, regardless of status.
+    ///
+    /// Used after stopping/abandoning a task to retrieve its full data for
+    /// `SessionCard` generation, since `get_active_task` only returns active tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn get_task_by_id(&self, task_id: uuid::Uuid) -> Result<Option<Task>> {
+        let row = sqlx::query(
+            "SELECT id, name, description, started_at, stopped_at, status, summary, git_repo, event_count
+             FROM tasks WHERE id = ?",
+        )
+        .bind(task_id.to_string())
         .fetch_optional(&self.pool)
         .await?;
 

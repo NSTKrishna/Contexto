@@ -64,6 +64,9 @@ clap = { version = "4.5", features = ["derive", "env"] }
 config = "0.14"
 dotenvy = "0.15"
 
+# Secret scrubbing and pattern extraction (ctx-core)
+regex = "1.11"
+
 # =============================================================================
 # Workspace-wide Lint Configuration
 # Zero-tolerance on common footguns.

@@ -8,9 +8,11 @@
 //! - `ctx remember <note>` — Manually annotate context with a permanent note
 //! - `ctx search <query> [--limit N]` — FTS5 search across all captured context
 //! - `ctx task start <name>` — Start a new tracked task
-//! - `ctx task stop` — Stop the current active task
-//! - `ctx task abandon` — Abandon the current task without summarization
+//! - `ctx task stop` — Stop the current active task (generates SessionCard)
+//! - `ctx task abandon` — Abandon the current task (generates partial SessionCard)
 //! - `ctx task list` — List all tasks
+//! - `ctx task summary [<id>]` — Show the SessionCard summary for a completed task
+//! - `ctx prune [--days N]` — Manually trigger TTL pruning of old events
 //!
 //! ## Usage
 //! ```sh
@@ -98,6 +100,13 @@ enum Commands {
         #[command(subcommand)]
         action: TaskAction,
     },
+
+    /// Prune old Layer-1 events from the database (manual TTL pruning)
+    Prune {
+        /// Delete orphan events older than this many days (default: 30)
+        #[arg(short, long, default_value = "30")]
+        days: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -107,12 +116,17 @@ enum TaskAction {
         /// Task name / description
         name: String,
     },
-    /// Stop the current active task (marks as completed)
+    /// Stop the current active task (marks as completed and generates a SessionCard)
     Stop,
-    /// Abandon the current active task (no summarization)
+    /// Abandon the current active task (generates a partial SessionCard)
     Abandon,
     /// List all tasks (newest first)
     List,
+    /// Show the SessionCard summary for a completed or abandoned task
+    Summary {
+        /// Task UUID (if omitted, shows the most recently completed task)
+        id: Option<String>,
+    },
 }
 
 // =============================================================================
@@ -426,6 +440,133 @@ async fn cmd_task_list(client: &reqwest::Client, base: &str, format: &str) -> an
     Ok(())
 }
 
+async fn cmd_prune(client: &reqwest::Client, base: &str, days: u32) -> anyhow::Result<()> {
+    let resp: serde_json::Value = client
+        .post(format!("{base}/prune"))
+        .json(&serde_json::json!({ "days": days }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let deleted = resp["deleted"].as_u64().unwrap_or(0);
+    if deleted == 0 {
+        println!("✅ No stale events found (TTL={days} days).");
+    } else {
+        println!("🧹 Pruned {deleted} stale events older than {days} days.");
+    }
+    Ok(())
+}
+
+async fn cmd_task_summary(
+    client: &reqwest::Client,
+    base: &str,
+    format: &str,
+    id: Option<String>,
+) -> anyhow::Result<()> {
+    let url = if let Some(task_id) = &id {
+        format!("{base}/tasks/{task_id}/summary")
+    } else {
+        // Fetch most recent completed task first
+        let tasks: serde_json::Value = client
+            .get(format!("{base}/tasks"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let most_recent = tasks
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|t| t["status"].as_str() == Some("completed"))
+            })
+            .and_then(|t| t["id"].as_str().map(str::to_string));
+
+        let Some(tid) = most_recent else {
+            println!("No completed tasks found. Stop a task first with `ctx task stop`.");
+            return Ok(());
+        };
+        format!("{base}/tasks/{tid}/summary")
+    };
+
+    let summary: serde_json::Value = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    if format == "json" {
+        print_json(&summary);
+        return Ok(());
+    }
+
+    // Pretty-print the SessionCard fields
+    println!("╭──────────────────────────────────────────╮");
+    println!("│         Session Summary (SessionCard)     │");
+    println!("╰──────────────────────────────────────────╯");
+
+    let goal = summary["goal"].as_str().unwrap_or("(unknown)");
+    let result = summary["result"].as_str().unwrap_or("?");
+    let duration = summary["duration_secs"].as_i64().unwrap_or(0);
+    let token_est = summary["token_estimate"].as_u64().unwrap_or(0);
+
+    let result_icon = if result == "completed" { "✅" } else { "❌" };
+    let duration_str = if duration < 60 {
+        format!("{duration}s")
+    } else if duration < 3600 {
+        format!("{}m {}s", duration / 60, duration % 60)
+    } else {
+        format!("{}h {}m", duration / 3600, (duration % 3600) / 60)
+    };
+
+    println!("  Goal:     {goal}");
+    println!("  Result:   {result_icon} {result}");
+    println!("  Duration: {duration_str}");
+    println!("  ~Tokens:  {token_est}");
+
+    if let Some(files) = summary["files_touched"].as_array() {
+        if !files.is_empty() {
+            println!("\n  Files Touched:");
+            for f in files {
+                println!("    • {}", f.as_str().unwrap_or("?"));
+            }
+        }
+    }
+
+    if let Some(cmds) = summary["commands_verified"].as_array() {
+        if !cmds.is_empty() {
+            println!("\n  Commands:");
+            for c in cmds {
+                let cmd = c["cmd"].as_str().unwrap_or("?");
+                let exit_code = c["exit_code"].as_i64();
+                let icon = match exit_code {
+                    Some(0) => "✅",
+                    Some(_) => "❌",
+                    None => "  ",
+                };
+                println!("    {icon} `{cmd}`");
+            }
+        }
+    }
+
+    if let Some(decisions) = summary["decisions"].as_array() {
+        if !decisions.is_empty() {
+            println!("\n  Key Decisions:");
+            for d in decisions {
+                println!("    • {}", d.as_str().unwrap_or("?"));
+            }
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
 // =============================================================================
 // Entry point
 // =============================================================================
@@ -464,7 +605,10 @@ async fn main() -> anyhow::Result<()> {
             TaskAction::Stop => cmd_task_action(&client, base, "stop").await,
             TaskAction::Abandon => cmd_task_action(&client, base, "abandon").await,
             TaskAction::List => cmd_task_list(&client, base, format).await,
+            TaskAction::Summary { id } => cmd_task_summary(&client, base, format, id).await,
         },
+
+        Commands::Prune { days } => cmd_prune(&client, base, days).await,
     };
 
     if let Err(e) = result {

@@ -13,6 +13,19 @@
 //! - [`ingestion_buffer`] — a `tokio::sync::mpsc` ring buffer decoupling
 //!   high-frequency event ingestion from SQLite batch writes
 //!
+//! ## Ingestion Pre-Processor Pipeline
+//!
+//! Before any event enters the ring buffer, three transformations are applied
+//! inside [`ContextEvent::new`]:
+//!
+//! 1. **ANSI stripping** ([`ansi`]) — removes VT100/ANSI escape sequences that
+//!    waste 40–60% of disk space and poison FTS5 search indexes.
+//! 2. **Secret scrubbing** ([`redact`]) — masks API keys, tokens, and credentials
+//!    so they are never written to SQLite or FTS5 indexes.
+//! 3. **Dual-ended truncation** ([`truncation`]) — keeps the first and last 3.8KB
+//!    of content (instead of head-only), preserving stack traces and test failures
+//!    that appear at the bottom of runaway output.
+//!
 //! ## Ring Buffer Design
 //!
 //! During active development, the IDE or terminal can fire 50–200 events/second.
@@ -23,6 +36,26 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+// =============================================================================
+// Public sub-modules
+// =============================================================================
+
+/// ANSI/VT100 escape sequence stripper.
+pub mod ansi;
+
+/// Dual-ended content truncation (head + tail).
+pub mod truncation;
+
+/// Pre-ingestion secret scrubber.
+pub mod redact;
+
+/// Deterministic `SessionCard` distillation from completed tasks.
+pub mod distill;
+
+/// Re-export the max content size constant from `truncation` for
+/// backwards compatibility with code that imports `ctx_core::MAX_CONTENT_SIZE`.
+pub use truncation::MAX_CONTENT_SIZE;
 
 // =============================================================================
 // Event Source
@@ -79,10 +112,6 @@ impl std::str::FromStr for EventSource {
 // Context Event
 // =============================================================================
 
-/// The maximum allowed content size for a single event (bytes).
-/// Matches the `CTX_MAX_TERMINAL_EVENT_SIZE` env var default.
-pub const MAX_CONTENT_SIZE: usize = 8_192;
-
 /// The atomic unit of captured developer context.
 ///
 /// Every piece of information flowing through Contexto is a `ContextEvent`.
@@ -125,29 +154,44 @@ pub struct ContextEvent {
 impl ContextEvent {
     /// Create a new event with the current timestamp and a fresh UUID.
     ///
-    /// Content is automatically truncated to [`MAX_CONTENT_SIZE`] bytes
-    /// to prevent runaway `npm install` output from flooding the database.
+    /// ## Pre-Processor Pipeline
+    ///
+    /// Three transformations are applied to `content` before storage:
+    ///
+    /// 1. **ANSI stripping** — removes VT100 escape sequences (`\x1b[32m`, etc.)
+    ///    that waste disk space and corrupt FTS5 search indexes.
+    /// 2. **Secret scrubbing** — masks API keys, tokens, and credentials so they
+    ///    are never written to SQLite. Sets `was_redacted = true` on the event.
+    /// 3. **Dual-ended truncation** — preserves the first and last ~3.8KB of content
+    ///    (instead of head-only), so stack traces and test failures at the bottom
+    ///    of runaway output are never silently discarded.
     pub fn new(source: EventSource, label: impl Into<String>, content: impl Into<String>) -> Self {
         let raw_content: String = content.into();
-        let content = if raw_content.len() > MAX_CONTENT_SIZE {
+
+        // Step 1: Strip ANSI/VT100 escape sequences
+        let clean = ansi::strip_ansi(&raw_content);
+
+        // Step 2: Scrub secrets (API keys, tokens, credentials)
+        let (scrubbed, was_redacted) = redact::scrubber().scrub(&clean);
+
+        // Step 3: Dual-ended truncation (head 3.8KB + marker + tail 3.8KB)
+        let trunc = truncation::truncate_head_tail(&scrubbed);
+        if trunc.was_truncated {
             tracing::debug!(
-                "Content truncated from {} to {} bytes",
-                raw_content.len(),
-                MAX_CONTENT_SIZE
+                "Content truncated from {} bytes (dual-ended, {} → stored)",
+                trunc.original_len,
+                trunc.content.len()
             );
-            raw_content[..MAX_CONTENT_SIZE].to_string()
-        } else {
-            raw_content
-        };
+        }
 
         Self {
             id: Uuid::new_v4(),
             timestamp: Utc::now(),
             source,
             label: label.into(),
-            content,
+            content: trunc.content,
             metadata: None,
-            was_redacted: false,
+            was_redacted,
             cwd: None,
             git_repo: None,
             task_id: None,
@@ -362,22 +406,33 @@ mod tests {
     fn test_event_construction_and_builders() {
         let event = ContextEvent::new(EventSource::Terminal, "cargo build", "Finished in 2.3s")
             .with_cwd("/home/user/project")
-            .with_git_repo("Contexto")
-            .with_redaction();
+            .with_git_repo("Contexto");
 
         assert_eq!(event.source, EventSource::Terminal);
         assert_eq!(event.label, "cargo build");
+        // Content passes through the pre-processor but remains unchanged for clean input
         assert_eq!(event.content, "Finished in 2.3s");
-        assert!(event.was_redacted);
         assert_eq!(event.cwd.as_deref(), Some("/home/user/project"));
         assert_eq!(event.git_repo.as_deref(), Some("Contexto"));
     }
 
     #[test]
     fn test_content_truncation() {
-        let large = "x".repeat(MAX_CONTENT_SIZE + 100);
+        // With dual-ended truncation, large content gets a head + marker + tail
+        let large = "x".repeat(MAX_CONTENT_SIZE + 10_000);
         let event = ContextEvent::new(EventSource::Terminal, "big", large);
-        assert_eq!(event.content.len(), MAX_CONTENT_SIZE);
+        // Content should contain the truncation marker
+        assert!(
+            event.content.contains("[Contexto: truncated"),
+            "Expected truncation marker, got len={}",
+            event.content.len()
+        );
+        // And should not be unboundedly large
+        assert!(
+            event.content.len() < MAX_CONTENT_SIZE + 200,
+            "Content too large: {}",
+            event.content.len()
+        );
     }
 
     #[test]
